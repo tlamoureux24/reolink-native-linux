@@ -1,5 +1,7 @@
 #include "DeviceManager.h"
 
+#include "media/TalkSession.h"
+
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "media/StreamPlayer.h"
@@ -890,6 +892,58 @@ void DeviceManager::ptzPreset(int row, int presetId)
     m_pending.addFuture(QtConcurrent::run([client, ch, presetId] {
         client->call(Json::array({api::ptzCtrl(ch, QStringLiteral("ToPos"), 32, presetId)}));
     }));
+}
+
+QString DeviceManager::talkKey(int row) const
+{
+    const Entry &e = m_entries.at(row);
+    return QString::number(e.rec.id) + u':' + QString::number(e.channel);
+}
+
+bool DeviceManager::isTalking(int row) const
+{
+    return row >= 0 && row < m_entries.size() && !m_talks.value(talkKey(row)).isNull();
+}
+
+void DeviceManager::startTalk(int row)
+{
+    if (row < 0 || row >= m_entries.size() || isTalking(row))
+        return;
+    const Entry &e = m_entries.at(row);
+    if (!e.primed) {
+        emit talkStateChanged(row, false, tr("device not ready"));
+        return;
+    }
+    const QString key = talkKey(row);
+    auto *talk = new TalkSession({e.rec.addr, 9000, e.rec.username, e.password}, e.channel, this);
+    m_talks.insert(key, talk);
+    // Rows can move while talking: resolve the current row when reporting.
+    auto rowOf = [this, key] {
+        for (int i = 0; i < m_entries.size(); ++i)
+            if (talkKey(i) == key)
+                return i;
+        return -1;
+    };
+    connect(talk, &TalkSession::started, this, [this, rowOf] { emit talkStateChanged(rowOf(), true, {}); });
+    connect(talk, &TalkSession::failed, this, [this, rowOf, talk](const QString &err) {
+        talk->stop();
+        emit talkStateChanged(rowOf(), false, err);
+    });
+    connect(talk, &TalkSession::finished, this, [this, rowOf, key, talk] {
+        if (m_talks.value(key) == talk)
+            m_talks.remove(key);
+        talk->deleteLater();
+        emit talkStateChanged(rowOf(), false, {});
+    });
+    talk->start();
+}
+
+void DeviceManager::stopTalk(int row)
+{
+    if (row < 0 || row >= m_entries.size())
+        return;
+    if (TalkSession *talk = m_talks.value(talkKey(row)))
+        talk->stop(); // finished() reports the stop and frees it
 }
 
 void DeviceManager::retranslateStatuses()

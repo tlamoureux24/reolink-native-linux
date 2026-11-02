@@ -285,7 +285,11 @@ Capabilities parseAbility(const Json &value)
         c.aiDogCat = capVer(chn, "supportAiDogCat") || capVer(chn, "supportAiAnimal");
         c.ai = capVer(chn, "supportAi") || c.aiPeople || c.aiVehicle || c.aiDogCat;
         c.audio = capVer(chn, "supportAudio") || capVer(chn, "supportGop");
-        c.talk = capVer(chn, "talk"); // per-channel (verified on RLN8-410)
+        c.talk = capVer(chn, "talk") || capVer(chn, "ipcAudioTalk"); // per-channel (RLN8-410)
+        // Standalone cameras declare it at device level instead ("talk" on an
+        // RLC-811A / RLC-823A / Duo 2 PoE), as reolink_aio also accepts.
+        if (chns.size() == 1)
+            c.talk = c.talk || capVer(ability, "talk") || capVer(ability, "audioTalk");
         c.siren = capVer(chn, "supportAudioAlarm") || capVer(chn, "alarmAudio");
         c.floodlight = capVer(chn, "floodLight") || capVer(chn, "supportFLIntensity") ||
                        capVer(chn, "whiteLed");

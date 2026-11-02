@@ -133,6 +133,27 @@ Dialog {
                 }
                 Hint { text: qsTr("Uses the graphics card (VAAPI/NVDEC). Applies to streams opened from now on; turn it off if video stays black or corrupted.") }
 
+                // ---- Two-way talk ----
+                Section { text: qsTr("Two-way talk") }
+                SettingLine {
+                    label: qsTr("Microphone gain")
+                    Slider {
+                        id: gainSlider
+                        Layout.fillWidth: true
+                        from: 10; to: 200; stepSize: 5
+                        value: AppSettings.talkGain
+                        onMoved: AppSettings.talkGain = Math.round(value)
+                    }
+                    Text { text: Math.round(gainSlider.value) + " %"; color: Theme.text; font.pixelSize: 12
+                           Layout.preferredWidth: 48 }
+                }
+                SettingLine {
+                    label: qsTr("Mute the camera while I talk")
+                    Switch { checked: AppSettings.muteWhileTalking
+                             onToggled: AppSettings.muteWhileTalking = checked }
+                }
+                Hint { text: qsTr("If your voice sounds distorted, lower the gain. Muting the camera while you talk avoids feedback (the camera hearing itself through your speakers).") }
+
                 // ---- Live view tour ----
                 Section { text: qsTr("Live view tour") }
                 SettingLine {

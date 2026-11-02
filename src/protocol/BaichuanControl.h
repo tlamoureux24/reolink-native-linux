@@ -73,12 +73,39 @@ public:
 
     bool isOpen() const;
 
+    // ---- Two-way talk ----------------------------------------------------
+    // Wire facts (determined from the official Windows client's SDK for
+    // interoperability; written from scratch): cmd 10 returns <TalkAbility>,
+    // cmd 201 opens a talk session with a <TalkConfig>, cmd 202 carries audio
+    // (an <Extension> with <binaryData>1</binaryData>, then one "01wb" IMA
+    // ADPCM frame per message, sent without waiting for a reply), cmd 11 ends it.
+    struct TalkParams {
+        QString duplex = QStringLiteral("FDX");
+        QString audioStreamMode = QStringLiteral("followVideoStream");
+        QString audioType = QStringLiteral("adpcm");
+        int sampleRate = 16000;
+        int samplePrecision = 16;
+        int lengthPerEncoder = 1024; // samples per frame
+        QString soundTrack = QStringLiteral("mono");
+    };
+    // First duplex / stream mode / audio config the camera lists in cmd 10.
+    static TalkParams parseTalkAbility(const QByteArray &xml, bool *ok = nullptr);
+    static QByteArray talkConfigXml(int channel, const TalkParams &p);
+    // One "01wb" frame: magic, size twice, a 00 01 LL 00 block header, the
+    // encoder's start state (predictor, index), then the ADPCM bytes.
+    static QByteArray talkFrame(const QByteArray &adpcm, qint16 predictor, quint8 index);
+
+    bool talkStart(int channel, const TalkParams &p, quint16 *statusOut = nullptr);
+    bool talkSend(int channel, const QByteArray &frame); // fire-and-forget
+    void talkStop(int channel);
+
 private:
     Params m_p;
     std::unique_ptr<QTcpSocket> m_sock;
     QByteArray m_aesKey;
     QByteArray m_netBuf;      // socket bytes buffered past the last parsed reply
     quint32 m_messId = 0;     // per-connection RPC counter
+    quint32 m_talkMessId = 0; // mess_id of the cmd 201 that opened the talk session
 };
 
 } // namespace rl

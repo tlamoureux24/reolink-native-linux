@@ -524,6 +524,20 @@ FR = {
         "Glissez sur l'image pour masquer une zone (jusqu'à %1). Clic droit sur une zone pour la supprimer. Les zones masquées sont noircies dans le direct et les enregistrements.",
     "Masks enabled": "Masques activés",
     "%1 / %2": "%1 / %2",
+
+    # ---- Lot 4: two-way talk ----
+    "Stop talking": "Arrêter l'interphone",
+    "Talk through the camera": "Parler par la caméra",
+    "Talk: %1": "Interphone : %1",
+    "this camera doesn't offer two-way talk in a supported format": "cette caméra ne propose pas l'interphone dans un format pris en charge",
+    "the camera refused to start talking (status %1)": "la caméra a refusé l'interphone (statut %1)",
+    "the connection to the camera was lost": "la connexion à la caméra a été perdue",
+    "no microphone found": "aucun micro trouvé",
+    "the microphone couldn't be opened": "impossible d'ouvrir le micro",
+    "Microphone gain": "Gain du micro",
+    "Mute the camera while I talk": "Couper le son de la caméra pendant que je parle",
+    "If your voice sounds distorted, lower the gain. Muting the camera while you talk avoids feedback (the camera hearing itself through your speakers).":
+        "Si votre voix est déformée, baissez le gain. Couper le son de la caméra pendant que vous parlez évite l'effet Larsen (la caméra qui s'entend elle-même à travers vos haut-parleurs).",
 }
 
 

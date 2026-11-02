@@ -239,6 +239,14 @@ int main(int argc, char *argv[])
 
     // Check GitHub for a newer release shortly after the UI is up (skipped in
     // the headless screenshot mode). Silent unless an update is found.
+    // TEST HOOK: RL_TALK_ROW=<row> talks to that camera from 8 s to 18 s after
+    // start (microphone included), to check the whole talk path headlessly.
+    if (qEnvironmentVariableIsSet("RL_TALK_ROW")) {
+        const int row = qEnvironmentVariableIntValue("RL_TALK_ROW");
+        QTimer::singleShot(8000, &devices, [&devices, row] { devices.startTalk(row); });
+        QTimer::singleShot(18000, &devices, [&devices, row] { devices.stopTalk(row); });
+    }
+
     // TEST HOOK: RL_SWITCH_LANGUAGE=<code> switches the language 10 s after
     // start, so a live switch can be checked in --smoke screenshots.
     if (qEnvironmentVariableIsSet("RL_SWITCH_LANGUAGE"))

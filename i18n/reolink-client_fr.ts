@@ -231,6 +231,26 @@
     </message>
     <message>
         <location line="+3" />
+        <source>Two-way talk</source>
+        <translation>Interphone</translation>
+    </message>
+    <message>
+        <location line="+2" />
+        <source>Microphone gain</source>
+        <translation>Gain du micro</translation>
+    </message>
+    <message>
+        <location line="+12" />
+        <source>Mute the camera while I talk</source>
+        <translation>Couper le son de la caméra pendant que je parle</translation>
+    </message>
+    <message>
+        <location line="+4" />
+        <source>If your voice sounds distorted, lower the gain. Muting the camera while you talk avoids feedback (the camera hearing itself through your speakers).</source>
+        <translation>Si votre voix est déformée, baissez le gain. Couper le son de la caméra pendant que vous parlez évite l'effet Larsen (la caméra qui s'entend elle-même à travers vos haut-parleurs).</translation>
+    </message>
+    <message>
+        <location line="+3" />
         <source>Live view tour</source>
         <translation>Ronde en direct</translation>
     </message>
@@ -425,13 +445,13 @@
     </message>
     <message>
         <location line="+52" />
-        <location line="+1147" />
+        <location line="+1151" />
         <location line="+64" />
         <source>Loading…</source>
         <translation>Chargement…</translation>
     </message>
     <message>
-        <location line="-1185" />
+        <location line="-1189" />
         <source>Select a device</source>
         <translation>Choisir un appareil</translation>
     </message>
@@ -506,7 +526,7 @@
         <translation>Formater le disque</translation>
     </message>
     <message>
-        <location line="+91" />
+        <location line="+95" />
         <location line="+12" />
         <source>Auto</source>
         <translation>Auto</translation>
@@ -1307,17 +1327,18 @@
 <context>
     <name>LivePane</name>
     <message>
-        <location filename="../src/ui/qml/components/LivePane.qml" line="+389" />
+        <location filename="../src/ui/qml/components/LivePane.qml" line="+408" />
         <source>No camera</source>
         <translation>Aucune caméra</translation>
     </message>
     <message>
         <location line="+2" />
+        <location line="+126" />
         <source>Connecting…</source>
         <translation>Connexion…</translation>
     </message>
     <message>
-        <location line="+2" />
+        <location line="-124" />
         <source>Stopped</source>
         <translation>Arrêté</translation>
     </message>
@@ -1378,11 +1399,16 @@
     </message>
     <message>
         <location line="+8" />
-        <source>Two-way talk (coming soon)</source>
-        <translation>Interphone (bientôt)</translation>
+        <source>Stop talking</source>
+        <translation>Arrêter l'interphone</translation>
     </message>
     <message>
-        <location line="+5" />
+        <location line="+1" />
+        <source>Talk through the camera</source>
+        <translation>Parler par la caméra</translation>
+    </message>
+    <message>
+        <location line="+13" />
         <source>Sound siren</source>
         <translation>Déclencher la sirène</translation>
     </message>
@@ -1630,7 +1656,12 @@
         <translation>Échec de la capture : %1</translation>
     </message>
     <message>
-        <location line="+3" />
+        <location line="+2" />
+        <source>Talk: %1</source>
+        <translation>Interphone : %1</translation>
+    </message>
+    <message>
+        <location line="+4" />
         <source>Siren triggered</source>
         <translation>Sirène déclenchée</translation>
     </message>
@@ -2447,23 +2478,23 @@ Cliquez sur + pour en ajouter un.</translation>
 <context>
     <name>rl::DeviceManager</name>
     <message>
-        <location filename="../src/device/DeviceManager.cpp" line="+76" />
+        <location filename="../src/device/DeviceManager.cpp" line="+78" />
         <location line="+462" />
-        <location line="+366" />
+        <location line="+418" />
         <source>ready</source>
         <translation>prêt</translation>
     </message>
     <message>
-        <location line="-828" />
+        <location line="-880" />
         <location line="+366" />
         <location line="+26" />
         <location line="+29" />
-        <location line="+407" />
+        <location line="+459" />
         <source>connecting…</source>
         <translation>connexion…</translation>
     </message>
     <message>
-        <location line="-782" />
+        <location line="-834" />
         <location line="+612" />
         <source>unreachable</source>
         <translation>injoignable</translation>
@@ -2473,19 +2504,19 @@ Cliquez sur + pour en ajouter un.</translation>
         <location line="+15" />
         <location line="+488" />
         <location line="+112" />
-        <location line="+154" />
+        <location line="+206" />
         <source>online</source>
         <translation>en ligne</translation>
     </message>
     <message>
-        <location line="-754" />
+        <location line="-806" />
         <location line="+488" />
-        <location line="+266" />
+        <location line="+318" />
         <source>offline</source>
         <translation>hors ligne</translation>
     </message>
     <message>
-        <location line="-493" />
+        <location line="-545" />
         <source>the device did not answer like a Reolink camera or NVR</source>
         <translation>l'appareil n'a pas répondu comme une caméra ou un NVR Reolink</translation>
     </message>
@@ -2495,7 +2526,8 @@ Cliquez sur + pour en ajouter un.</translation>
         <translation>trousseau indisponible — mot de passe non enregistré</translation>
     </message>
     <message>
-        <location line="+200" />
+        <location line="+199" />
+        <location line="+53" />
         <location line="+21" />
         <location line="+72" />
         <location line="+149" />
@@ -2664,6 +2696,39 @@ Cliquez sur + pour en ajouter un.</translation>
         <location filename="../src/core/Notifier.cpp" line="+48" />
         <source>View recording</source>
         <translation>Voir l'enregistrement</translation>
+    </message>
+</context>
+<context>
+    <name>rl::TalkSession</name>
+    <message>
+        <location filename="../src/media/TalkSession.cpp" line="+64" />
+        <source>couldn't reach the device</source>
+        <translation>impossible de joindre l'appareil</translation>
+    </message>
+    <message>
+        <location line="+7" />
+        <source>this camera doesn't offer two-way talk in a supported format</source>
+        <translation>cette caméra ne propose pas l'interphone dans un format pris en charge</translation>
+    </message>
+    <message>
+        <location line="+6" />
+        <source>the camera refused to start talking (status %1)</source>
+        <translation>la caméra a refusé l'interphone (statut %1)</translation>
+    </message>
+    <message>
+        <location line="+36" />
+        <source>the connection to the camera was lost</source>
+        <translation>la connexion à la caméra a été perdue</translation>
+    </message>
+    <message>
+        <location line="+8" />
+        <source>no microphone found</source>
+        <translation>aucun micro trouvé</translation>
+    </message>
+    <message>
+        <location line="+14" />
+        <source>the microphone couldn't be opened</source>
+        <translation>impossible d'ouvrir le micro</translation>
     </message>
 </context>
 <context>

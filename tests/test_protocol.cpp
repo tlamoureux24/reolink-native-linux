@@ -2,7 +2,11 @@
 #include "protocol/BcCrypto.h"
 #include "protocol/ReolinkApi.h"
 
+#include "media/ImaAdpcm.h"
+#include "protocol/BaichuanControl.h"
+
 #include <QtTest>
+#include <cmath>
 
 static void putLE32(QByteArray &b, quint32 v)
 {
@@ -191,6 +195,24 @@ private slots:
         QVERIFY(!caps.channels[1].ptz);
         QVERIFY(!caps.channels[1].talk);
         QVERIFY(caps.channels[1].battery);
+    }
+
+    void parseAbilityTalkLevel()
+    {
+        // Standalone camera (RLC-811A shape): talk at device level only.
+        const QByteArray cam = R"({"Ability":{"talk":{"ver":1,"permit":6},
+            "abilityChn":[{"ptzType":{"ver":1,"permit":6}}]}})";
+        Json v = Json::parse(cam.constData(), cam.constData() + cam.size(), nullptr, false);
+        api::Capabilities c = api::parseAbility(v);
+        QVERIFY(c.channels[0].talk);
+        QVERIFY(!c.channels[0].panTilt); // ptzType 1 = zoom only
+        // NVR: a device-level talk must not light up every channel.
+        const QByteArray nvr = R"({"Ability":{"talk":{"ver":1,"permit":6},
+            "abilityChn":[{"talk":{"ver":1,"permit":6}},{}]}})";
+        v = Json::parse(nvr.constData(), nvr.constData() + nvr.size(), nullptr, false);
+        c = api::parseAbility(v);
+        QVERIFY(c.channels[0].talk);
+        QVERIFY(!c.channels[1].talk);
     }
 
     void parseAbilityAdmin()
@@ -408,6 +430,86 @@ private slots:
         QCOMPARE(api::recordingTriggers(QString()), 0);
         QCOMPARE(api::recordingTriggers(QStringLiteral("fragment_01_20260709015958.mp4")), 0);
         QCOMPARE(api::recordingTriggers(QStringLiteral("RecS02_a_b_c_ZZZZ_1.mp4")), 0);
+    }
+
+    void imaAdpcmRoundTrip()
+    {
+        // 440 Hz at 16 kHz, half scale: encode then decode with the start state.
+        QVector<qint16> pcm(1024);
+        for (int i = 0; i < pcm.size(); ++i)
+            pcm[i] = static_cast<qint16>(16000 * std::sin(2 * M_PI * 440 * i / 16000.0));
+        ImaAdpcm enc;
+        const QByteArray data = enc.encode(pcm.constData(), static_cast<int>(pcm.size()));
+        QCOMPARE(data.size(), 512);
+        const QVector<qint16> back = ImaAdpcm::decode(data, 0, 0);
+        QCOMPARE(back.size(), pcm.size());
+        double sig = 0, err = 0;
+        for (int i = 64; i < pcm.size(); ++i) { // skip the adaptation ramp
+            sig += double(pcm[i]) * pcm[i];
+            err += double(pcm[i] - back[i]) * (pcm[i] - back[i]);
+        }
+        QVERIFY2(10 * std::log10(sig / err) > 20, "ADPCM round trip below 20 dB SNR");
+    }
+
+    void imaAdpcmDviNibbleOrder()
+    {
+        // First sample positive and large -> code 7 (0111) in the HIGH nibble;
+        // second sample back to 0 -> a negative code (bit 3 set) in the low one.
+        ImaAdpcm enc;
+        const qint16 two[2] = {32000, 0};
+        const QByteArray b = enc.encode(two, 2);
+        QCOMPARE(b.size(), 1);
+        QCOMPARE(quint8(b[0]) >> 4, 7);
+        QVERIFY((quint8(b[0]) & 0x08) != 0);
+    }
+
+    void talkFrameLayout()
+    {
+        const QByteArray adpcm(512, '\x5a');
+        const QByteArray f = BaichuanControl::talkFrame(adpcm, -2, 7);
+        QCOMPARE(f.size(), 16 + 512);
+        QCOMPARE(f.left(4), QByteArray("01wb"));
+        QCOMPARE(quint8(f[4]) | (quint8(f[5]) << 8), 520); // size: data + 8
+        QCOMPARE(quint8(f[6]) | (quint8(f[7]) << 8), 520); // repeated
+        QCOMPARE(quint8(f[8]), 0x00);
+        QCOMPARE(quint8(f[9]), 0x01);
+        QCOMPARE(quint8(f[10]), (512 / 2 + 2) & 0xFF);       // words, truncated
+        QCOMPARE(quint8(f[11]), 0x00);
+        QCOMPARE(qint16(quint8(f[12]) | (quint8(f[13]) << 8)), qint16(-2)); // predictor
+        QCOMPARE(quint8(f[14]) | (quint8(f[15]) << 8), 7);                  // index
+        QCOMPARE(f.mid(16), adpcm);
+    }
+
+    void talkAbilityAndConfig()
+    {
+        // Real reply from an RLC-823A / RLC-811A / Duo 2 PoE (cmd 10).
+        const QByteArray ability = R"(<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<TalkAbility version="1.1">
+<duplexList><duplex>FDX</duplex></duplexList>
+<audioStreamModeList><audioStreamMode>followVideoStream</audioStreamMode></audioStreamModeList>
+<audioConfigList><audioConfig><priority>0</priority><audioType>adpcm</audioType>
+<sampleRate>16000</sampleRate><samplePrecision>16</samplePrecision>
+<lengthPerEncoder>1024</lengthPerEncoder><soundTrack>mono</soundTrack></audioConfig></audioConfigList>
+</TalkAbility>
+</body>)";
+        bool ok = false;
+        const BaichuanControl::TalkParams p = BaichuanControl::parseTalkAbility(ability, &ok);
+        QVERIFY(ok);
+        QCOMPARE(p.duplex, QStringLiteral("FDX"));
+        QCOMPARE(p.audioStreamMode, QStringLiteral("followVideoStream"));
+        QCOMPARE(p.sampleRate, 16000);
+        QCOMPARE(p.lengthPerEncoder, 1024);
+        const QByteArray cfg = BaichuanControl::talkConfigXml(0, p);
+        QVERIFY(cfg.contains("<TalkConfig version=\"1.1\">"));
+        QVERIFY(cfg.contains("<channelId>0</channelId>"));
+        QVERIFY(cfg.contains("<duplex>FDX</duplex>"));
+        QVERIFY(cfg.contains("<audioType>adpcm</audioType>"));
+        QVERIFY(cfg.contains("<lengthPerEncoder>1024</lengthPerEncoder>"));
+        QVERIFY(cfg.contains("<soundTrack>mono</soundTrack>"));
+        bool none = true;
+        BaichuanControl::parseTalkAbility("<body/>", &none);
+        QVERIFY(!none);
     }
 
     void playbackTransportChoice()

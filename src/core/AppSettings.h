@@ -29,6 +29,10 @@ class AppSettings : public QObject
     Q_PROPERTY(bool checkUpdates READ checkUpdates WRITE setCheckUpdates NOTIFY checkUpdatesChanged)
     // Live view "tour": seconds each camera stays maximized while touring.
     Q_PROPERTY(int tourSeconds READ tourSeconds WRITE setTourSeconds NOTIFY tourSecondsChanged)
+    // Two-way talk: microphone gain in percent (10..200), and muting the
+    // camera's sound while talking so speaker->mic feedback can't build up.
+    Q_PROPERTY(int talkGain READ talkGain WRITE setTalkGain NOTIFY talkGainChanged)
+    Q_PROPERTY(bool muteWhileTalking READ muteWhileTalking WRITE setMuteWhileTalking NOTIFY muteWhileTalkingChanged)
 
 public:
     explicit AppSettings(QObject *parent = nullptr);
@@ -54,6 +58,12 @@ public:
     int tourSeconds() const { return m_tourSeconds; }
     void setTourSeconds(int seconds);
 
+    int talkGain() const { return s_talkGain.load(); }
+    void setTalkGain(int percent);
+    bool muteWhileTalking() const { return m_muteWhileTalking; }
+    void setMuteWhileTalking(bool on);
+    static int talkGainPercent() { return s_talkGain.load(); }
+
     // Installs the translator for the current language. `retranslate` is called
     // after every later switch so QML re-evaluates its qsTr() bindings.
     void installTranslator(std::function<void()> retranslate);
@@ -70,6 +80,8 @@ signals:
     void desktopNotificationsChanged();
     void checkUpdatesChanged();
     void tourSecondsChanged();
+    void talkGainChanged();
+    void muteWhileTalkingChanged();
 
 private:
     bool loadTranslation();
@@ -77,12 +89,14 @@ private:
     QString m_language;
     bool m_checkUpdates = true;
     int m_tourSeconds = 10;
+    bool m_muteWhileTalking = true;
     QTranslator m_translator;
     bool m_translatorInstalled = false;
     std::function<void()> m_retranslate;
 
     static std::atomic<bool> s_hardwareDecoding;
     static std::atomic<bool> s_desktopNotifications;
+    static std::atomic<int> s_talkGain;
 };
 
 } // namespace rl

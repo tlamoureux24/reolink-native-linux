@@ -8,6 +8,7 @@
 #include "media/StreamPlayer.h"
 
 #include <QAbstractListModel>
+#include <QPointer>
 #include <QDateTime>
 #include <QFutureSynchronizer>
 #include <QHash>
@@ -153,6 +154,11 @@ public:
     Q_INVOKABLE void ptzMove(int row, const QString &op, int speed = 32);
     Q_INVOKABLE void ptzStop(int row);
     Q_INVOKABLE void ptzPreset(int row, int presetId);
+    // Two-way talk: stream the microphone to this camera until stopTalk().
+    // One talk session per camera; talkStateChanged reports start/stop/errors.
+    Q_INVOKABLE void startTalk(int row);
+    Q_INVOKABLE void stopTalk(int row);
+    Q_INVOKABLE bool isTalking(int row) const;
     // Start/stop a patrol (cruise) by its GetPtzPatrol id. Emits ptzPatrolDone.
     Q_INVOKABLE void ptzPatrol(int row, int patrolId, bool start);
     // Capture a JPEG snapshot; emits snapshotSaved/snapshotFailed.
@@ -265,6 +271,7 @@ signals:
     void settingsFailed(int row, const QString &error);
     void settingApplied(int row, const QString &command, bool ok, const QString &error);
     void ptzPatrolDone(int row, bool ok, const QString &error);
+    void talkStateChanged(int row, bool active, const QString &error);
     void alertsLoaded(int row, const QVariantMap &values);
     void bcConfigLoaded(int row, int cmdId, const QVariantMap &values);
     void recScheduleLoaded(int row, const QVariantMap &values);
@@ -390,6 +397,9 @@ private:
     // The in-flight Baichuan playback session, so a scrub can seek it in place.
     // Weak: the StreamPlayer owns the client's lifetime.
     std::weak_ptr<BaichuanClient> m_playbackClient;
+    // Running talk sessions, keyed "hostId:channel" (rows can shift).
+    QHash<QString, QPointer<class TalkSession>> m_talks;
+    QString talkKey(int row) const;
     int m_playbackRow = -1;
 };
 

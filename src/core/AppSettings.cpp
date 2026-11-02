@@ -11,6 +11,7 @@ namespace rl {
 
 std::atomic<bool> AppSettings::s_hardwareDecoding{true};
 std::atomic<bool> AppSettings::s_desktopNotifications{true};
+std::atomic<int> AppSettings::s_talkGain{100};
 
 namespace {
 const auto kLanguage = QStringLiteral("app/language");
@@ -19,6 +20,8 @@ const auto kRecordings = QStringLiteral("app/recordingsDir");
 const auto kNotify = QStringLiteral("app/desktopNotifications");
 const auto kUpdates = QStringLiteral("app/checkUpdates");
 const auto kTour = QStringLiteral("app/tourSeconds");
+const auto kTalkGain = QStringLiteral("app/talkGain");
+const auto kTalkMute = QStringLiteral("app/muteWhileTalking");
 } // namespace
 
 AppSettings::AppSettings(QObject *parent)
@@ -31,6 +34,8 @@ AppSettings::AppSettings(QObject *parent)
     s_desktopNotifications = s.value(kNotify, true).toBool();
     m_checkUpdates = s.value(kUpdates, true).toBool();
     m_tourSeconds = qBound(3, s.value(kTour, 10).toInt(), 300);
+    s_talkGain = qBound(10, s.value(kTalkGain, 100).toInt(), 200);
+    m_muteWhileTalking = s.value(kTalkMute, true).toBool();
 }
 
 QVariantList AppSettings::languages() const
@@ -147,6 +152,25 @@ void AppSettings::setTourSeconds(int seconds)
     m_tourSeconds = seconds;
     QSettings().setValue(kTour, seconds);
     emit tourSecondsChanged();
+}
+
+void AppSettings::setTalkGain(int percent)
+{
+    percent = qBound(10, percent, 200);
+    if (s_talkGain == percent)
+        return;
+    s_talkGain = percent; // read live by TalkSession
+    QSettings().setValue(kTalkGain, percent);
+    emit talkGainChanged();
+}
+
+void AppSettings::setMuteWhileTalking(bool on)
+{
+    if (m_muteWhileTalking == on)
+        return;
+    m_muteWhileTalking = on;
+    QSettings().setValue(kTalkMute, on);
+    emit muteWhileTalkingChanged();
 }
 
 } // namespace rl
