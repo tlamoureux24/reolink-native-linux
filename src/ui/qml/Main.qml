@@ -29,11 +29,15 @@ ApplicationWindow {
         }
     }
     // Closing hides to the tray when enabled — monitoring and notifications
-    // keep running; Quit lives in the tray menu.
+    // keep running; Quit lives in the tray menu. With "keep running" off, the
+    // close button quits for real: with a tray the app otherwise never exits on
+    // its last window (setQuitOnLastWindowClosed(false)) and lingers as an icon.
     onClosing: (close) => {
         if (Tray.available && Tray.closeToTray) {
             close.accepted = false;
             window.hide();
+        } else if (Tray.available) {
+            Tray.quit();
         }
     }
 

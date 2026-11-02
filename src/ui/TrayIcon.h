@@ -28,6 +28,8 @@ public:
     void setStartOnLogin(bool on);
 
     void setUnread(int unread); // tooltip badge
+    // Quit the app through the same guarded path as the tray menu's Quit.
+    Q_INVOKABLE void quit() { emit quitRequested(); }
 
 signals:
     void closeToTrayChanged();

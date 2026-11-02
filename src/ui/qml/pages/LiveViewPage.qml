@@ -117,7 +117,9 @@ Item {
         id: layoutStore
         category: "liveGrid"
         property string arrangement: ""
+        property int preset: 4       // 1/4/6/9/16 — kept across restarts
     }
+    onPresetChanged: if (layoutRestored) layoutStore.preset = preset
     property bool layoutRestored: false
 
     function saveLayout() {
@@ -136,6 +138,8 @@ Item {
     function restoreLayout() {
         if (layoutRestored || Devices.count === 0)
             return;
+        if ([1, 4, 6, 9, 16].indexOf(layoutStore.preset) >= 0)
+            preset = layoutStore.preset;
         layoutRestored = true;
         var saved = layoutStore.arrangement;
         if (saved.length > 0) {
