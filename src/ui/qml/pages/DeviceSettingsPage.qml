@@ -22,6 +22,9 @@ Item {
     }
     property var settings: ({})      // cmd -> value map from the last fetch
     property bool isAdmin: false
+    function refreshAdmin() {
+        page.isAdmin = page.deviceRow >= 0 ? Devices.isAdminAt(page.deviceRow) : false;
+    }
     property string status: ""
     // A message kept on screen must follow a live language switch: remember
     // how to build it and rebuild it when the language changes.
@@ -162,9 +165,13 @@ Item {
         // page asked before that, its fetch failed with "device not ready" and
         // nothing retried: fetch again when the shown device has no settings yet.
         function onRowsInserted() {
+            page.refreshAdmin();
             if (page.deviceRow >= 0 && Object.keys(page.settings).length === 0)
                 Qt.callLater(page.fetch);
         }
+        // isAdminAt() isn't a binding: re-read it whenever device data changes
+        // (it is only known once the device has signed in).
+        function onDataChanged() { page.refreshAdmin(); }
         function onSettingApplied(row, command, ok, error) {
             if (row !== page.deviceRow)
                 return;
@@ -245,7 +252,7 @@ Item {
                     Layout.fillWidth: true
                     onCurrentIndexChanged: {
                         page.deviceRow = currentIndex;
-                        page.isAdmin = currentIndex >= 0 ? Devices.isAdminAt(currentIndex) : false;
+                        page.refreshAdmin();
                         page.fetch();
                     }
                 }
