@@ -33,6 +33,7 @@ struct CommandResult {
     QString cmd;
     bool ok = false;
     Json value;      // "value" object when ok
+    Json range;      // "range" object (action=1 only): slider bounds, enums
     int rspCode = 0; // negative device error when !ok
     QString detail;
 };
@@ -109,7 +110,15 @@ QString snapUrl(const QString &host, int port, bool https, int channel, const QS
 // simply hides the control. Verify against target firmware (DESIGN §6.10).
 struct ChannelCaps {
     bool ptz = false;
+    bool panTilt = false;    // can actually pan/tilt (not just zoom/focus)
     bool ptzPreset = false;
+    bool ptzPatrol = false;
+    bool ptzGuard = false;   // guard point (GetPtzGuard / SetPtzGuard)
+    bool ptzSpeed = false;   // PtzCtrl honours "speed"
+    bool ptzCheck = false;   // PtzCheck (calibration)
+    bool autoTrack = false;  // AI tracking (GetAiCfg aiTrack/bSmartTrack)
+    bool autoFocus = false;  // GetAutoFocus / SetAutoFocus
+    bool zoomFocusPos = false; // StartZoomFocus ZoomPos/FocusPos sliders
     bool zoom = false;
     bool focus = false;
     bool ai = false;
@@ -182,6 +191,7 @@ struct RecordingFile {
     QDateTime playbackTime;
     QString streamType; // "main"/"sub" (NOT the trigger type on NVR firmware)
     qint64 size = 0;
+    int triggers = 0;   // trigger:: flags decoded from `name` (0 when unnamed)
 };
 struct SearchResult {
     bool ok = false;
@@ -190,6 +200,15 @@ struct SearchResult {
     QString error;
 };
 SearchResult parseSearch(const Json &value);
+
+// What triggered a recording, decoded from its file name like reolink_aio's
+// parse_file_name: RecXVV_<date>_<start>_<end>_[...]_<hexflags>_<size>, where
+// the hex flags read as a bit string, left to right. 0 when the name doesn't
+// match (e.g. NVR firmware, which returns no name).
+namespace trigger {
+enum : int { Timer = 1, Motion = 2, Person = 4, Vehicle = 8, Animal = 16, Doorbell = 32 };
+}
+int recordingTriggers(const QString &fileName);
 
 // HTTP-FLV playback stream for an NVR recording (verified on RLN8-410):
 //   <scheme>://host/flv?port=1935&app=bcs&stream=playback.bcs&channel=N

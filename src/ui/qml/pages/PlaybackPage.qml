@@ -56,6 +56,23 @@ Item {
     // HD mode streams the full-resolution main stream over native Baichuan; off =
     // light sub-stream (FLV) scrubbing.
     property bool hdMode: false
+    // Transport shared by the single pane and every grid pane. Pause keeps the
+    // streams open (file sources) so "next frame" can step; the Baichuan HD
+    // session is paced by the device, so there pause still stops.
+    property real rate: 1.0
+    property bool paused: false
+    property bool soundOn: false     // single pane only; silent unless 1x and playing
+    readonly property bool canPause: page.paneCount === 4 || !page.hdMode
+    function stepFrame() {
+        if (page.paneCount === 4) {
+            for (var i = 0; i < paneRepeater.count; i++) {
+                var p = gridPane(i);
+                if (p && p.streaming) p.stepFrame();
+            }
+        } else {
+            player.stepFrame();
+        }
+    }
 
     // ---- Synced multi-camera playback ---------------------------------------
     // Like the official client: up to 4 panes, one calendar and one timeline
@@ -100,6 +117,22 @@ Item {
     // The union track lets you scrub to anything any pane has; each lane shows
     // who actually has footage where. Overlapping segments simply overdraw on
     // the union track, so no interval merging is needed.
+    // Timeline filter (official client: icons beside the calendar). A mask of
+    // trigger flags from Devices' segments (1 timer, 2 motion, 4 person,
+    // 8 vehicle, 16 animal); 0 shows everything. It filters what the timeline
+    // shows, not what plays — footage between matches still plays through.
+    property int triggerFilter: 0
+    property var daySegments: []   // single-pane: the day's unfiltered segments
+    function filtered(segs) {
+        if (page.triggerFilter === 0) return segs;
+        return segs.filter(function (s) { return ((s.triggers || 0) & page.triggerFilter) !== 0; });
+    }
+    function applyFilter() {
+        if (page.paneCount === 4) recomputeGrid();
+        else timeline.segments = filtered(page.daySegments);
+    }
+    onTriggerFilterChanged: applyFilter()
+
     function recomputeGrid() {
         var lanes = [];
         var union = [];
@@ -107,7 +140,7 @@ Item {
             var r = page.gridRows[i];
             if (r === undefined || r < 0)
                 continue;
-            var segs = page.gridSegs[r] || [];
+            var segs = filtered(page.gridSegs[r] || []);
             var info = Devices.cameraInfo(r);
             lanes.push({ name: info && info.name ? info.name : qsTr("Camera %1").arg(i + 1),
                          segments: segs });
@@ -241,6 +274,7 @@ Item {
             page.paneCount = 1;
             timeline.lanes = [];
             timeline.segments = [];
+            page.daySegments = [];
             page.refresh();
         }
     }
@@ -253,9 +287,9 @@ Item {
     // Advance the playhead in realtime while streaming, so the timeline cursor
     // tracks the current position (and play/pause resumes from where you are).
     Timer {
-        interval: 1000; repeat: true
-        running: player.state === StreamPlayer.Streaming || page.streamingPanes > 0
-        onTriggered: if (page.playheadSecs < 86399) page.playheadSecs += 1
+        interval: 250; repeat: true
+        running: (player.state === StreamPlayer.Streaming || page.streamingPanes > 0) && !page.paused
+        onTriggered: page.playheadSecs = Math.min(86399, page.playheadSecs + page.rate / 4)
     }
 
     function refresh() {
@@ -324,6 +358,7 @@ Item {
     // Move the playhead and, if a recording covers that moment, play from it.
     function playAt(sec) {
         page._suppressResume = false;
+        page.paused = false; // a seek or (re)start always plays
         page.playheadSecs = sec;
         if (page.paneCount === 4) {
             // One commit fans out to every placed pane at the same wall-clock
@@ -434,7 +469,8 @@ Item {
                 return;
             }
             if (row === page.deviceRow) {
-                timeline.segments = segments;
+                page.daySegments = segments;
+                timeline.segments = page.filtered(segments);
                 statusText.text = segments.length + qsTr(" recordings");
                 // Overlay this day's detection events as timeline markers.
                 var info = Devices.cameraInfo(page.deviceRow);
@@ -489,6 +525,7 @@ Item {
             }
             if (row === page.deviceRow) {
                 timeline.segments = [];
+                page.daySegments = [];
                 statusText.text = error;
             }
         }
@@ -707,7 +744,12 @@ Item {
 
                 // Retry on connection error: NVRs are connection-limited and may
                 // momentarily refuse the playback stream.
-                StreamPlayer { id: player; videoSink: video.videoSink; retryOnError: true }
+                StreamPlayer {
+                    id: player; videoSink: video.videoSink; retryOnError: true
+                    playbackRate: page.rate
+                    paused: page.paused && page.canPause
+                    audioEnabled: page.soundOn
+                }
 
                 Column {
                     anchors.centerIn: parent
@@ -785,6 +827,8 @@ Item {
                         viewRotation: rotationOverride
                         segments: page.gridSegs[index] || []
                         playheadSecs: page.playheadSecs
+                        rate: page.rate
+                        paused: page.paused
                         // HD only while maximized; restoring forces SD (the pane
                         // handles the switch-back itself when this goes false).
                         showHdToggle: isMax
@@ -856,23 +900,48 @@ Item {
                 // (a StreamPlayer session is one-shot, so "play" re-opens the stream).
                 // In grid mode the one control drives every pane.
                 Ctl {
-                    readonly property bool playing: page.paneCount === 4
+                    readonly property bool streaming: page.paneCount === 4
                         ? page.streamingPanes > 0
                         : player.state === StreamPlayer.Streaming
+                    readonly property bool playing: streaming && !page.paused
                     glyph: playing ? "⏸" : "▶"
                     tip: playing ? qsTr("Pause") : qsTr("Play")
                     onActivated: {
-                        if (playing) {
+                        if (playing && page.canPause) {
+                            page.paused = true;
+                        } else if (playing) {
                             page._suppressResume = true;
-                            if (page.paneCount === 4) page.stopAllPanes();
-                            else player.stop();
+                            player.stop();
+                        } else if (streaming) {
+                            page.paused = false;
                         } else {
                             page.playAt(page.playheadSecs);
                         }
                     }
                 }
+                Ctl { glyph: page.soundOn ? "🔊" : "🔇"
+                      visible: page.paneCount === 1 && player.hasAudio
+                      tip: page.soundOn ? qsTr("Mute") : qsTr("Sound (1× only)")
+                      onActivated: page.soundOn = !page.soundOn }
+                Ctl { glyph: "⏭"; tip: qsTr("Next frame")
+                      visible: page.paused
+                      onActivated: page.stepFrame() }
+                Ctl {
+                    width: 46
+                    glyph: (page.rate < 1 ? "½" : page.rate) + "×"
+                    tip: qsTr("Playback speed")
+                    onActivated: speedMenu.popup()
+                    ThemedMenu {
+                        id: speedMenu
+                        ThemedMenuItem { text: "0.5×"; onTriggered: page.rate = 0.5 }
+                        ThemedMenuItem { text: "1×"; onTriggered: page.rate = 1 }
+                        ThemedMenuItem { text: "2×"; onTriggered: page.rate = 2 }
+                        ThemedMenuItem { text: "4×"; onTriggered: page.rate = 4 }
+                        ThemedMenuItem { text: "8×"; onTriggered: page.rate = 8 }
+                    }
+                }
                 Ctl { glyph: "⏹"; tip: qsTr("Stop")
-                      onActivated: { page._suppressResume = true;
+                      onActivated: { page._suppressResume = true; page.paused = false;
                                      player.stop(); page.stopAllPanes(); } }
                 // Export: save a main-stream MP4 of the moment at the playhead.
                 // Single-pane only — it targets THE camera, and grid mode has four.
@@ -957,6 +1026,7 @@ Item {
             radius: Theme.radius
 
             MonthCalendar {
+                id: calendar
                 anchors.top: parent.top
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.topMargin: Theme.spacing
@@ -977,6 +1047,39 @@ Item {
                     // re-entering the grid and play the wrong day.
                     page.gridSegs = ({});
                     page.refresh();
+                }
+            }
+
+            // ---- Detection filter ----
+            Column {
+                anchors.top: calendar.bottom
+                anchors.topMargin: Theme.spacing * 2
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: Theme.spacing
+                spacing: 6
+                Text { text: qsTr("Show on timeline"); color: Theme.textMuted; font.pixelSize: 11 }
+                Flow {
+                    width: parent.width
+                    spacing: 4
+                    Repeater {
+                        model: [{ mask: 0, label: qsTr("All") },
+                                { mask: 4, label: qsTr("People") },
+                                { mask: 8, label: qsTr("Vehicles") },
+                                { mask: 16, label: qsTr("Animals") },
+                                { mask: 2, label: qsTr("Motion") }]
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: page.triggerFilter === modelData.mask
+                            width: chipTxt.implicitWidth + 16; height: 24; radius: 12
+                            color: on ? Theme.accentDim : chipHover.hovered ? Theme.surfaceAlt : "transparent"
+                            border.color: on ? Theme.accent : Theme.border
+                            Text { id: chipTxt; anchors.centerIn: parent; text: parent.modelData.label
+                                   color: Theme.text; font.pixelSize: 11 }
+                            HoverHandler { id: chipHover }
+                            TapHandler { onTapped: page.triggerFilter = parent.modelData.mask }
+                        }
+                    }
                 }
             }
         }

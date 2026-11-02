@@ -1,5 +1,6 @@
 #include "ReolinkApi.h"
 
+#include <cmath>
 #include <QUrl>
 
 namespace rl {
@@ -78,8 +79,14 @@ Json toJson(const QVariant &v)
     case QMetaType::LongLong:
         return static_cast<qint64>(v.toLongLong());
     case QMetaType::Double:
-    case QMetaType::Float:
-        return v.toDouble();
+    case QMetaType::Float: {
+        // QML hands Math.round()/arithmetic results over as double; Reolink
+        // firmware rejects 207.0 where it wants 207 ("param error").
+        const double d = v.toDouble();
+        if (std::isfinite(d) && d == std::floor(d) && std::fabs(d) < 9.0e15)
+            return static_cast<qint64>(d);
+        return d;
+    }
     case QMetaType::QString:
         return v.toString().toStdString();
     default:
@@ -127,6 +134,7 @@ BatchResult parseBatch(const QByteArray &body)
         if (code == 0) {
             r.ok = true;
             r.value = jsonObj(item, "value");
+            r.range = jsonObj(item, "range");
         } else {
             const Json err = jsonObj(item, "error");
             r.rspCode = jsonInt(err, "rspCode", 0);
@@ -215,14 +223,20 @@ QString snapUrl(const QString &host, int port, bool https, int channel, const QS
 }
 
 // A capability is "present" when its {ver} (or bare int) is > 0.
-static bool capVer(const Json &chn, const char *key)
+// Ability version; -1 when the key is absent (so callers can fall back).
+static int capVersion(const Json &chn, const char *key)
 {
     const Json &v = jsonRef(chn, key);
     if (v.is_object())
-        return jsonInt(v, "ver", 0) > 0;
+        return jsonInt(v, "ver", 0);
     if (v.is_number_integer() || v.is_number_unsigned())
-        return v.get<int>() > 0;
-    return false;
+        return v.get<int>();
+    return -1;
+}
+
+static bool capVer(const Json &chn, const char *key)
+{
+    return capVersion(chn, key) > 0;
 }
 
 Capabilities parseAbility(const Json &value)
@@ -245,7 +259,24 @@ Capabilities parseAbility(const Json &value)
     for (const Json &chn : chns) {
         ChannelCaps c;
         c.ptz = capVer(chn, "ptzCtrl") || capVer(chn, "ptzType");
-        c.ptzPreset = capVer(chn, "ptzPreset");
+        // ptzType (reolink_aio): 1 = zoom/focus only (e.g. RLC-811A), 2/3/5/6/7
+        // pan/tilt. Without it, keep the old assumption that PTZ means pan/tilt.
+        const int ptzType = capVersion(chn, "ptzType");
+        c.panTilt = ptzType < 0 ? c.ptz
+                                : (ptzType == 2 || ptzType == 3 || ptzType == 5 || ptzType == 6
+                                   || ptzType == 7);
+        c.ptzPreset = capVer(chn, "ptzPreset") && c.panTilt;
+        c.ptzPatrol = capVer(chn, "ptzPatrol") && c.panTilt;
+        c.ptzGuard = c.ptzPreset;
+        c.ptzSpeed = capVer(chn, "supportPtzSpeed");
+        c.ptzCheck = (capVer(chn, "supportPtzCheck") || capVer(chn, "supportPtzCalibration"))
+                     && c.panTilt;
+        c.autoTrack = capVer(chn, "aiTrack") || capVer(chn, "supportAiTrack");
+        c.autoFocus = capVer(chn, "disableAutoFocus");
+        // Motorised zoom/focus positions (StartZoomFocus): ptzType 1/2/5 as in
+        // reolink_aio; the panel still waits for the GetZoomFocus range.
+        c.zoomFocusPos = ptzType == 1 || ptzType == 2 || ptzType == 5
+                         || capVer(chn, "supportZoomAndFocusSliderCfg");
         c.zoom = capVer(chn, "ptzCtrl") || capVer(chn, "supportPtzZoom");
         c.focus = capVer(chn, "ptzCtrl") || capVer(chn, "supportPtzFocus");
         // AI: some firmware exposes supportAi, others per-type flags.
@@ -373,6 +404,7 @@ SearchResult parseSearch(const Json &value)
         rf.playbackTime = parseTimeObj(jsonObj(f, "PlaybackTime")); // FLV seek reference
         rf.streamType = QString::fromStdString(jsonStr(f, "type")); // "main"/"sub"
         rf.size = jsonInt(f, "size", 0); // arrives as a string on NVR firmware
+        rf.triggers = recordingTriggers(rf.name);
         out.files.append(rf);
     }
     // Status[].table is a 31-char bitmap ("0000011110…"); char[day-1]=='1' means
@@ -386,6 +418,54 @@ SearchResult parseSearch(const Json &value)
                 out.recordingDays.append(i + 1);
     }
     return out;
+}
+
+int recordingTriggers(const QString &fileName)
+{
+    // Basename without extension, then its "_" fields.
+    QString base = fileName.section(u'/', -1);
+    base = base.left(base.lastIndexOf(u'.') >= 0 ? base.lastIndexOf(u'.') : base.size());
+    const QStringList parts = base.split(u'_');
+    if (parts.isEmpty() || !parts[0].startsWith(QLatin1String("Rec")) || parts[0].size() != 6)
+        return 0;
+    // Field layout by count: camera (6 or 7 fields) or Home Hub (9 fields).
+    QString hex;
+    bool hub = false;
+    if (parts.size() == 6)
+        hex = parts[4];
+    else if (parts.size() == 7)
+        hex = parts[5];
+    else if (parts.size() == 9) {
+        hex = parts[7];
+        hub = true;
+    } else
+        return 0;
+    bool okVer = false;
+    const int version = parts[0].mid(4, 2).toInt(&okVer, 16);
+    if (!okVer)
+        return 0;
+
+    QString bits;
+    for (const QChar c : hex) {
+        bool ok = false;
+        const int nibble = QString(c).toInt(&ok, 16);
+        if (!ok)
+            return 0;
+        bits += QStringLiteral("%1").arg(nibble, 4, 2, QLatin1Char('0'));
+    }
+    auto bit = [&](int pos) { return pos < bits.size() && bits[pos] == u'1'; };
+
+    // Bit positions (reolink_aio FLAGS_CAM_V2 / FLAGS_HUB_V0..V2). Hub v2
+    // widened ai_other, shifting the record-type flags by one.
+    const bool hubV2 = hub && version >= 2;
+    int t = 0;
+    if (bit(17)) t |= trigger::Person;
+    if (bit(19)) t |= trigger::Vehicle;
+    if (bit(20)) t |= trigger::Animal;
+    if (bit(hubV2 ? 24 : 23)) t |= trigger::Timer;
+    if (bit(hubV2 ? 25 : 24)) t |= trigger::Motion;
+    if (bit(hubV2 ? 27 : 26)) t |= trigger::Doorbell;
+    return t;
 }
 
 QString playbackFlvUrl(const QString &host, int port, bool https, int channel, bool mainStream,

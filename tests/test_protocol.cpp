@@ -234,6 +234,17 @@ private slots:
         QVERIFY(back["Enc"]["flags"].is_array());
     }
 
+    void toJsonSendsIntegralDoublesAsIntegers()
+    {
+        // QML passes Math.round() results as double; firmware wants 207, not 207.0.
+        const Json j = api::toJson(QVariantMap{{QStringLiteral("pos"), 207.0},
+                                               {QStringLiteral("ratio"), 0.5}});
+        QVERIFY(j["pos"].is_number_integer());
+        QCOMPARE(j["pos"].get<int>(), 207);
+        QVERIFY(j["ratio"].is_number_float());
+        QCOMPARE(j.dump(), std::string(R"({"pos":207,"ratio":0.5})"));
+    }
+
     void parseChannelStatusNvr()
     {
         // Real RLN8-410 shape: value.status[] with per-channel online/name/uid.
@@ -374,6 +385,29 @@ private slots:
         QVERIFY(!sr.files[0].playbackTime.isValid());
         QCOMPARE(sr.files[0].size, qint64(10700129));
         QCOMPARE(sr.recordingDays, QVector<int>({1, 2}));
+    }
+
+    void recordingTriggersFromFileName()
+    {
+        using namespace api::trigger;
+        // Expected values computed with reolink_aio's own decoder on the
+        // examples documented in its parse_file_name.
+        QCOMPARE(api::recordingTriggers(QStringLiteral(
+                     "Mp4Record/2023-04-26/RecS02_DST20230426_145918_150032_2B14808_32F1DF.mp4")),
+                 int(Motion));
+        QCOMPARE(api::recordingTriggers(QStringLiteral(
+                     "Mp4Record/2020-12-22/RecM01_20201222_075939_080140_6D28808_1A468F9.mp4")),
+                 int(Motion));
+        QCOMPARE(api::recordingTriggers(QStringLiteral(
+                     "RecS07_20250219_111146_111238_0_A714C0A000_21E67C.mp4")),
+                 int(Person | Motion | Doorbell));
+        QCOMPARE(api::recordingTriggers(QStringLiteral(
+                     "/mnt/sda/x/Mp4Record/2024-08-27/RecM02_DST20240827_090302_090334_0_800_800_033C820000_61B6F0.mp4")),
+                 0);
+        // Unknown shapes decode to nothing rather than garbage.
+        QCOMPARE(api::recordingTriggers(QString()), 0);
+        QCOMPARE(api::recordingTriggers(QStringLiteral("fragment_01_20260709015958.mp4")), 0);
+        QCOMPARE(api::recordingTriggers(QStringLiteral("RecS02_a_b_c_ZZZZ_1.mp4")), 0);
     }
 
     void playbackTransportChoice()

@@ -150,6 +150,8 @@ public:
     Q_INVOKABLE void ptzMove(int row, const QString &op, int speed = 32);
     Q_INVOKABLE void ptzStop(int row);
     Q_INVOKABLE void ptzPreset(int row, int presetId);
+    // Start/stop a patrol (cruise) by its GetPtzPatrol id. Emits ptzPatrolDone.
+    Q_INVOKABLE void ptzPatrol(int row, int patrolId, bool start);
     // Capture a JPEG snapshot; emits snapshotSaved/snapshotFailed.
     Q_INVOKABLE void snapshot(int row);
     // Quiet snapshot for an event thumbnail: fetches a Snap JPEG, downscales it,
@@ -191,7 +193,11 @@ public:
 
     // Settings: fetch a batch of Get* commands (emits settingsLoaded with a map
     // of cmd -> value) and apply one Set* command (emits settingApplied).
-    Q_INVOKABLE void fetchSettings(int row, const QStringList &getCommands);
+    // A non-empty tag is echoed back as values["_tag"] (failures included, as
+    // "_error"), so a panel other than Device Settings — e.g. the PTZ panel —
+    // can fetch without the Settings page mistaking the reply for its own.
+    Q_INVOKABLE void fetchSettings(int row, const QStringList &getCommands,
+                                   const QString &tag = QString());
     Q_INVOKABLE void applySetting(int row, const QString &setCommand, const QVariantMap &param);
     // Toggle the camera's white-LED / floodlight on<->off. Reads GetWhiteLed first
     // so only the on/off state flips, leaving brightness and the auto/schedule mode
@@ -255,6 +261,7 @@ signals:
     void settingsLoaded(int row, const QVariantMap &values);
     void settingsFailed(int row, const QString &error);
     void settingApplied(int row, const QString &command, bool ok, const QString &error);
+    void ptzPatrolDone(int row, bool ok, const QString &error);
     void alertsLoaded(int row, const QVariantMap &values);
     void bcConfigLoaded(int row, int cmdId, const QVariantMap &values);
     void recScheduleLoaded(int row, const QVariantMap &values);

@@ -892,6 +892,27 @@ void DeviceManager::ptzPreset(int row, int presetId)
     }));
 }
 
+void DeviceManager::ptzPatrol(int row, int patrolId, bool start)
+{
+    auto client = clientFor(row);
+    if (!client) {
+        emit ptzPatrolDone(row, false, tr("device not ready"));
+        return;
+    }
+    const int ch = m_entries.at(row).channel;
+    const QString op = start ? QStringLiteral("StartPatrol") : QStringLiteral("StopPatrol");
+    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, op, patrolId] {
+        const api::BatchResult b = client->call(Json::array({api::ptzCtrl(ch, op, 32, patrolId)}));
+        const bool ok = b.transportOk && !b.results.isEmpty() && b.results.first().ok;
+        const QString error = ok ? QString()
+                            : (!b.results.isEmpty() && !b.results.first().detail.isEmpty()
+                                   ? b.results.first().detail : tr("failed"));
+        QMetaObject::invokeMethod(
+            this, [this, row, ok, error] { emit ptzPatrolDone(row, ok, error); },
+            Qt::QueuedConnection);
+    }));
+}
+
 void DeviceManager::snapshot(int row)
 {
     auto client = clientFor(row);
@@ -995,7 +1016,11 @@ void DeviceManager::searchRecordings(int row, int year, int month, int day)
                 QVariantMap seg;
                 seg["start"] = static_cast<double>(s);
                 seg["end"] = static_cast<double>(e);
-                seg["type"] = QStringLiteral("timer");
+                // Anything beyond the schedule is an alarm (blue on the timeline);
+                // NVR firmware names no file, so it stays "timer" as before.
+                seg["type"] = (f.triggers & ~api::trigger::Timer) ? QStringLiteral("alarm")
+                                                                  : QStringLiteral("timer");
+                seg["triggers"] = f.triggers;
                 seg["startEpoch"] = static_cast<double>(f.start.toSecsSinceEpoch());
                 segments.append(seg);
                 files.append({f.start.toSecsSinceEpoch(),
@@ -1202,6 +1227,50 @@ void DeviceManager::exportClip(int row, qint64 startEpoch, int durationSecs)
     const QDateTime end = start.addSecs(qBound(2, durationSecs, 300));
     const QString startStamp = start.toString(QStringLiteral("yyyyMMddHHmmss"));
 
+    // Standalone cameras have no NvrDownload ("not support", rspCode -9 on a
+    // Duo 2 PoE). They download recordings by name: find the main-stream files
+    // overlapping [start,end] and fetch each whole (they are short event clips).
+    if (e.rec.kind != QLatin1String("nvr")) {
+        m_pending.addFuture(QtConcurrent::run([this, client, ch, row, host, port, https, start,
+                                               end, safe] {
+            QStringList saved;
+            QString error;
+            const api::BatchResult b = client->call(Json::array(
+                {api::searchBody(ch, start.addSecs(-3600), end, QStringLiteral("main"))}));
+            if (!b.transportOk || b.results.isEmpty() || !b.results.first().ok) {
+                error = b.error.isEmpty() ? tr("clip request failed") : b.error;
+            } else {
+                for (const api::RecordingFile &f : api::parseSearch(b.results.first().value).files) {
+                    if (f.name.isEmpty() || !f.start.isValid() || f.start > end
+                        || (f.end.isValid() && f.end < start))
+                        continue;
+                    const QString url = api::downloadUrl(host, port, https, f.name,
+                                                         client->token(), f.name.section(u'/', -1));
+                    const QString path = Paths::recordingsDir() + u'/' + safe + u'_'
+                                         + f.start.toString(QStringLiteral("yyyyMMdd_hhmmss"))
+                                         + QStringLiteral(".mp4");
+                    QString dlErr;
+                    if (client->downloadToFile(url, path, 300, &dlErr))
+                        saved.append(path);
+                    else
+                        error = dlErr.isEmpty() ? tr("download failed") : dlErr;
+                }
+                if (saved.isEmpty() && error.isEmpty())
+                    error = tr("no recording covers this moment");
+            }
+            QMetaObject::invokeMethod(
+                this,
+                [this, row, saved, error] {
+                    if (!saved.isEmpty())
+                        emit clipExported(row, saved.join(QStringLiteral(", ")));
+                    else
+                        emit clipExportFailed(row, error);
+                },
+                Qt::QueuedConnection);
+        }));
+        return;
+    }
+
     m_pending.addFuture(QtConcurrent::run([this, client, ch, row, host, port, https, start, end,
                                            startStamp, safe] {
         QString error;
@@ -1310,15 +1379,19 @@ bool DeviceManager::seekBaichuanPlayback(int row, qint64 startEpoch)
     return client && client->seek(startEpoch);
 }
 
-void DeviceManager::fetchSettings(int row, const QStringList &getCommands)
+void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const QString &tag)
 {
     auto client = clientFor(row);
     if (!client || getCommands.isEmpty()) {
-        emit settingsFailed(row, tr("device not ready"));
+        if (tag.isEmpty())
+            emit settingsFailed(row, tr("device not ready"));
+        else
+            emit settingsLoaded(row, {{QStringLiteral("_tag"), tag},
+                                      {QStringLiteral("_error"), tr("device not ready")}});
         return;
     }
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, getCommands] {
+    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, getCommands, tag] {
         QVariantMap values;
         QStringList failed;
         QString lastError;
@@ -1351,6 +1424,10 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands)
                 r = fetchOne(v20Alt.value(c));
             if (r.ok) {
                 values.insert(c, api::toVariant(r.value));
+                // Bounds differ per model (zoom 0..34 vs 0..41, focus 0..230 vs
+                // 0..1104 on two RLC-823A): expose them as "<Cmd>Range".
+                if (!r.range.empty())
+                    values.insert(c + QStringLiteral("Range"), api::toVariant(r.range));
             } else {
                 failed.append(c);
                 if (!r.detail.isEmpty())
@@ -1359,10 +1436,10 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands)
         }
         QMetaObject::invokeMethod(
             this,
-            [this, row, values, failed, lastError] {
-                if (values.isEmpty()) {
-                    emit settingsFailed(row, lastError.isEmpty() ? tr("settings fetch failed")
-                                                                 : lastError);
+            [this, row, values, failed, lastError, tag] {
+                const QString error = lastError.isEmpty() ? tr("settings fetch failed") : lastError;
+                if (values.isEmpty() && tag.isEmpty()) {
+                    emit settingsFailed(row, error);
                     return;
                 }
                 // Report which commands the device refused so panels can show an
@@ -1373,6 +1450,11 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands)
                     for (const QString &c : failed)
                         f.append(c);
                     v.insert(QStringLiteral("_failed"), f);
+                }
+                if (!tag.isEmpty()) {
+                    v.insert(QStringLiteral("_tag"), tag);
+                    if (values.isEmpty())
+                        v.insert(QStringLiteral("_error"), error);
                 }
                 emit settingsLoaded(row, v);
             },
@@ -1469,6 +1551,16 @@ QVariantMap DeviceManager::cameraInfo(int row) const
     m["isAdmin"] = e.isAdmin;
     m["capPtz"] = e.caps.ptz;
     m["capZoom"] = e.caps.zoom;
+    m["capFocus"] = e.caps.focus;
+    m["capPanTilt"] = e.caps.panTilt;
+    m["capPtzPreset"] = e.caps.ptzPreset;
+    m["capPtzGuard"] = e.caps.ptzGuard;
+    m["capPtzPatrol"] = e.caps.ptzPatrol;
+    m["capPtzSpeed"] = e.caps.ptzSpeed;
+    m["capPtzCheck"] = e.caps.ptzCheck;
+    m["capAutoTrack"] = e.caps.autoTrack;
+    m["capAutoFocus"] = e.caps.autoFocus;
+    m["capZoomFocusPos"] = e.caps.zoomFocusPos;
     m["capAudio"] = e.caps.audio;
     m["capSiren"] = e.caps.siren;
     m["capFloodlight"] = e.caps.floodlight;

@@ -117,6 +117,8 @@ Item {
     Connections {
         target: Devices
         function onSettingsLoaded(row, values) {
+            if (values["_tag"])
+                return; // another panel's fetch (e.g. PTZ)
             if (row === page.deviceRow) {
                 page.settings = values;
                 page.fetched = true;

@@ -55,6 +55,9 @@ Rectangle {
     // These carry the DEVICE ROW, not the pane index: the page tracks which
     // camera is maximized/selected, so both survive a rearrange.
     signal toggleMaximize(int index)
+    // Sound: the page keeps at most one pane audible (DESIGN §5.3).
+    property bool audioOn: false
+    signal audioToggled(int index)
     signal clicked(int index)
     signal popOut(int deviceRow, string label)
     // A camera was dropped onto this pane — from the sidebar or another pane.
@@ -164,6 +167,7 @@ Rectangle {
     StreamPlayer {
         id: player
         videoSink: video.videoSink
+        audioEnabled: root.audioOn
     }
 
     Component.onDestruction: player.stop()
@@ -403,8 +407,14 @@ Rectangle {
         sourceComponent: PtzPad {
             deviceRow: root.deviceRow
             showZoom: root.capZoom
+            // Test hook (RL_LIVE_PTZ): show the advanced panel too.
+            Component.onCompleted: if (typeof livePtzRow !== "undefined" && livePtzRow === deviceRow)
+                                       openPanel()
         }
     }
+    // Test hook (RL_LIVE_PTZ): open the pad once capabilities are known.
+    onCapPtzChanged: if (capPtz && typeof livePtzRow !== "undefined" && livePtzRow === deviceRow)
+                         ptzOpen = true
 
     // ---- Floating toolbar (hover) -----------------------------------------
     HoverHandler { id: paneHover }
@@ -465,6 +475,16 @@ Rectangle {
                 tip: root.qualityMain ? qsTr("Switch to Fluent (SD)") : qsTr("Switch to Clear (HD)")
                 active: root.qualityMain
                 onActivated: root.qualityMain = !root.qualityMain
+            }
+            // Sound for this camera (mutes whichever pane had it). Disabled until
+            // the stream turns out to carry audio — the main stream of a
+            // maximized pane runs over Baichuan, whose audio isn't wired yet.
+            ToolButton {
+                glyph: root.audioOn ? "🔊" : "🔇"; active: root.audioOn
+                enabledTool: player.hasAudio
+                tip: !player.hasAudio ? qsTr("No sound on this stream")
+                     : root.audioOn ? qsTr("Mute") : qsTr("Listen")
+                onActivated: root.audioToggled(root.deviceRow)
             }
             ToolButton {
                 glyph: "◉"; enabledTool: true

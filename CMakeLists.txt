@@ -15,7 +15,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-    libavformat libavcodec libavutil libswscale)
+    libavformat libavcodec libavutil libswscale libswresample)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 
@@ -63,6 +63,7 @@ set(APP_QML_FILES
     src/ui/qml/components/LivePane.qml
     src/ui/qml/components/PlaybackPane.qml
     src/ui/qml/components/PtzPad.qml
+    src/ui/qml/components/PtzPanel.qml
     src/ui/qml/components/Timeline.qml
     src/ui/qml/components/MonthCalendar.qml
     src/ui/qml/components/SettingRow.qml
@@ -143,7 +144,7 @@ endforeach()
 # Tests
 # ---------------------------------------------------------------------------
 enable_testing()
-foreach(t IN ITEMS test_protocol test_database test_singleinstance test_tls)
+foreach(t IN ITEMS test_protocol test_database test_singleinstance test_tls test_playback_pacing)
     qt_add_executable(${t} tests/${t}.cpp)
     target_link_libraries(${t} PRIVATE reolink_core Qt6::Test)
     add_test(NAME ${t} COMMAND ${t})

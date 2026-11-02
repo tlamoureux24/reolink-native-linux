@@ -173,6 +173,10 @@ int main(int argc, char *argv[])
         QStringLiteral("playbackGrid"), qEnvironmentVariableIsSet("RL_PLAYBACK_GRID"));
     engine.rootContext()->setContextProperty(
         QStringLiteral("playbackDate"), qEnvironmentVariable("RL_PLAYBACK_DATE"));
+    // RL_LIVE_PTZ=<row>: maximize that camera with its PTZ pad and panel open.
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("livePtzRow"),
+        qEnvironmentVariableIsSet("RL_LIVE_PTZ") ? qEnvironmentVariableIntValue("RL_LIVE_PTZ") : -1);
     engine.rootContext()->setContextProperty(QStringLiteral("startHidden"),
                                              parser.isSet(hiddenOption) && tray.available());
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,

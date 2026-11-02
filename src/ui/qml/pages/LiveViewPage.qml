@@ -18,6 +18,7 @@ Item {
     property int preset: 4
     property int maximizedIndex: -1
     property int selectedIndex: -1
+    property int audioIndex: -1      // the one audible camera (device row), -1 = none
 
     // A maximized pane is effectively the single ("1") view, so light that button
     // up in the layout toolbar rather than the underlying grid preset.
@@ -183,7 +184,11 @@ Item {
         }
     }
 
-    Component.onCompleted: restoreLayout()
+    Component.onCompleted: {
+        restoreLayout();
+        if (typeof livePtzRow !== "undefined" && livePtzRow >= 0)
+            Qt.callLater(function () { maximizedIndex = livePtzRow; });
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -348,6 +353,8 @@ Item {
                         page.maximizedIndex = page.maximizedIndex === idx ? -1 : idx;
                     }
                     onClicked: (idx) => page.selectedIndex = idx
+                    audioOn: page.audioIndex === index
+                    onAudioToggled: (idx) => page.audioIndex = page.audioIndex === idx ? -1 : idx
                     onPopOut: (row, lbl) => page.popOut(row, lbl)
                     onCameraDropped: (targetPane, row) => page.assignPane(targetPane, row)
 

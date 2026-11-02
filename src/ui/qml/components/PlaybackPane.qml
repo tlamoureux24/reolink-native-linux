@@ -29,6 +29,10 @@ Rectangle {
     property var segments: []
     // Bound to the page's shared playhead — drives the "no footage" verdict.
     property real playheadSecs: 0
+    // Shared transport (driven by the page): speed factor and pause/step.
+    property real rate: 1.0
+    property bool paused: false
+    function stepFrame() { player.stepFrame(); }
 
     signal clicked()
     // Double-click toggles maximize (the page owns which pane is maximized).
@@ -149,7 +153,11 @@ Rectangle {
 
     // Retry on connection error: NVRs are connection-limited and may
     // momentarily refuse a playback stream while others are opening.
-    StreamPlayer { id: player; videoSink: video.videoSink; retryOnError: true }
+    StreamPlayer {
+        id: player; videoSink: video.videoSink; retryOnError: true
+        playbackRate: root.rate
+        paused: root.paused && !root.hdActive // Baichuan HD is device-paced
+    }
     Component.onDestruction: player.stop()
 
     // ---- Video with digital zoom (same interaction as a live pane) --------
