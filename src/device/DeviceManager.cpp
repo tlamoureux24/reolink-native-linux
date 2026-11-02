@@ -892,6 +892,20 @@ void DeviceManager::ptzPreset(int row, int presetId)
     }));
 }
 
+void DeviceManager::retranslateStatuses()
+{
+    for (int i = 0; i < m_entries.size(); ++i) {
+        Entry &e = m_entries[i];
+        if (e.problem != Problem::None)
+            continue;
+        if (e.primed)
+            e.status = e.online ? tr("online") : tr("offline");
+        else
+            e.status = e.online ? tr("ready") : tr("connecting…");
+        emit dataChanged(index(i), index(i));
+    }
+}
+
 void DeviceManager::ptzPatrol(int row, int patrolId, bool start)
 {
     auto client = clientFor(row);

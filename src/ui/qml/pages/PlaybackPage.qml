@@ -59,6 +59,19 @@ Item {
     // Transport shared by the single pane and every grid pane. Pause keeps the
     // streams open (file sources) so "next frame" can step; the Baichuan HD
     // session is paced by the device, so there pause still stops.
+    // A message kept on screen must follow a live language switch: remember
+    // how to build it and rebuild it when the language changes.
+    property var _statusFn: null
+    function setStatus(fn) {
+        _statusFn = fn;
+        page.statusMessage = fn ? fn() : "";
+    }
+    Connections {
+        target: AppSettings
+        function onLanguageChanged() { if (page._statusFn) page.statusMessage = page._statusFn(); }
+    }
+    property string statusMessage: ""
+
     property real rate: 1.0
     property bool paused: false
     property bool soundOn: false     // single pane only; silent unless 1x and playing
@@ -148,7 +161,7 @@ Item {
         }
         timeline.lanes = lanes;
         timeline.segments = union;
-        statusText.text = qsTr("Synced playback — %n camera(s)", "", lanes.length);
+        page.setStatus(function () { return qsTr("Synced playback — %n camera(s)", "", lanes.length); });
     }
 
     function saveGridLayout() {
@@ -395,7 +408,7 @@ Item {
     function playHd(sec) {
         if (page.deviceRow < 0)
             return;
-        statusText.text = qsTr("HD");
+        page.setStatus(function () { return qsTr("HD"); });
         // Seek the running session in place (no reconnect) when possible; else open
         // a fresh Baichuan session.
         if (player.state === StreamPlayer.Streaming
@@ -417,7 +430,7 @@ Item {
         var epoch = new Date(page.selYear, page.selMonth - 1, page.selDay).getTime() / 1000
                     + Math.floor(page.playheadSecs);
         exportBtn.busy = true;
-        statusText.text = qsTr("Exporting clip…");
+        page.setStatus(function () { return qsTr("Exporting clip…"); });
         Devices.exportClip(page.deviceRow, epoch, secs);
     }
 
@@ -448,12 +461,12 @@ Item {
         function onClipExported(row, path) {
             if (row !== page.deviceRow) return;
             exportBtn.busy = false;
-            statusText.text = qsTr("Clip saved: %1").arg(path);
+            page.setStatus(function () { return qsTr("Clip saved: %1").arg(path); });
         }
         function onClipExportFailed(row, error) {
             if (row !== page.deviceRow) return;
             exportBtn.busy = false;
-            statusText.text = qsTr("Export failed: %1").arg(error);
+            page.setStatus(function () { return qsTr("Export failed: %1").arg(error); });
         }
         function onRecordingsFound(row, segments) {
             if (page.paneCount === 4) {
@@ -471,7 +484,7 @@ Item {
             if (row === page.deviceRow) {
                 page.daySegments = segments;
                 timeline.segments = page.filtered(segments);
-                statusText.text = segments.length + qsTr(" recordings");
+                page.setStatus(function () { return segments.length + qsTr(" recordings"); });
                 // Overlay this day's detection events as timeline markers.
                 var info = Devices.cameraInfo(page.deviceRow);
                 if (info && info.hostId !== undefined) {
@@ -520,13 +533,13 @@ Item {
                 s[row] = [];
                 page.gridSegs = s;
                 page.recomputeGrid();
-                statusText.text = error;
+                page.setStatus(function () { return error; });
                 return;
             }
             if (row === page.deviceRow) {
                 timeline.segments = [];
                 page.daySegments = [];
-                statusText.text = error;
+                page.setStatus(function () { return error; });
             }
         }
         // Re-fetch once the selected device finishes connecting (its client
@@ -630,7 +643,7 @@ Item {
                 Item { Layout.fillWidth: true }
                 Text {
                     id: statusText
-                    text: qsTr("Select a date")
+                    text: page.statusMessage !== "" ? page.statusMessage : qsTr("Select a date")
                     color: Theme.textMuted
                     font.pixelSize: 12
                 }
@@ -862,7 +875,7 @@ Item {
                         { start: 61200, end: 79200, type: "timer", name: "e" }
                     ];
                     page.playheadSecs = 32400;
-                    statusText.text = "5 recordings (mock)";
+                    page.setStatus(function () { return "5 recordings (mock)"; });
                 }
             }
 

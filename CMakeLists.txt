@@ -25,6 +25,7 @@ pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 add_library(reolink_core STATIC
     src/core/Log.h src/core/Log.cpp
     src/core/Paths.h src/core/Paths.cpp
+    src/core/AppSettings.h src/core/AppSettings.cpp
     src/core/Database.h src/core/Database.cpp
     src/core/CredentialStore.h src/core/CredentialStore.cpp
     src/core/Notifier.h src/core/Notifier.cpp
@@ -64,6 +65,9 @@ set(APP_QML_FILES
     src/ui/qml/components/PlaybackPane.qml
     src/ui/qml/components/PtzPad.qml
     src/ui/qml/components/PtzPanel.qml
+    src/ui/qml/components/ThemedCheckBox.qml
+    src/ui/qml/components/ThemedComboBox.qml
+    src/ui/qml/components/ThemedSpinBox.qml
     src/ui/qml/components/Timeline.qml
     src/ui/qml/components/MonthCalendar.qml
     src/ui/qml/components/SettingRow.qml
@@ -76,6 +80,7 @@ set(APP_QML_FILES
     src/ui/qml/pages/EventsPage.qml
     src/ui/qml/pages/DeviceSettingsPage.qml
     src/ui/qml/dialogs/AddDeviceDialog.qml
+    src/ui/qml/dialogs/ClientSettingsDialog.qml
     src/ui/qml/dialogs/PropertiesDialog.qml
     src/ui/qml/dialogs/UserEditDialog.qml
     src/ui/qml/dialogs/ConfirmDialog.qml
@@ -122,7 +127,7 @@ qt_add_resources(reolink-client "app_icons"
 target_link_libraries(reolink-client PRIVATE reolink_core Qt6::QuickControls2 Qt6::Widgets)
 
 qt_add_translations(reolink-client
-    TS_FILES i18n/reolink-client_en.ts i18n/reolink-client_es.ts
+    TS_FILES i18n/reolink-client_en.ts i18n/reolink-client_es.ts i18n/reolink-client_fr.ts
     LUPDATE_OPTIONS -no-obsolete)
 
 install(TARGETS reolink-client RUNTIME DESTINATION bin)

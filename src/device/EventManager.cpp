@@ -1,10 +1,12 @@
 #include "EventManager.h"
 
+#include "core/AppSettings.h"
 #include "DeviceManager.h"
 
 #include "core/Paths.h"
 
 #include <QDateTime>
+#include <QLocale>
 #include <QDir>
 #include <QFile>
 
@@ -64,6 +66,13 @@ bool EventManager::matches(const EventRecord &e) const
     return typeOk && camOk;
 }
 
+void EventManager::refreshTexts()
+{
+    // Time texts and labels are computed in data(): a reset re-reads them.
+    beginResetModel();
+    endResetModel();
+}
+
 void EventManager::reload()
 {
     beginResetModel();
@@ -102,7 +111,9 @@ QVariant EventManager::data(const QModelIndex &index, int role) const
             return tr("%1 min ago").arg(ago / 60);
         if (dt.date() == QDate::currentDate())
             return dt.toString(QStringLiteral("hh:mm"));
-        return dt.toString(QStringLiteral("MMM d, hh:mm"));
+        // The pattern is translatable (French puts the day first); month names
+        // come from the app's language via the default QLocale.
+        return QLocale().toString(dt, tr("MMM d, hh:mm"));
     }
     case ThumbnailRole:
         return e.thumbnail;
@@ -179,7 +190,8 @@ void EventManager::onDetection(qint64 hostId, int channel, const QString &type,
             what = tr("Pet detected");
         else if (type == QLatin1String("visitor")) what = tr("Visitor at the door");
         else                                        what = tr("Motion detected");
-        m_notifier.notify(camera.isEmpty() ? tr("Camera") : camera, what,
+        if (AppSettings::desktopNotificationsEnabled())
+            m_notifier.notify(camera.isEmpty() ? tr("Camera") : camera, what,
                           QStringLiteral("io.github.todesengelx.ReolinkLinux"),
                           hostId, channel, rec.timestamp);
     }
@@ -227,10 +239,11 @@ void EventManager::onConnectivity(qint64 hostId, int channel, const QString &nam
     ++m_unread;
     emit unreadChanged();
 
-    m_notifier.notify(name.isEmpty() ? tr("Device") : name,
-                      online ? tr("Back online") : tr("Went offline \u26a0"),
-                      QStringLiteral("io.github.todesengelx.ReolinkLinux"),
-                      hostId, rec.channel, rec.timestamp);
+    if (AppSettings::desktopNotificationsEnabled())
+        m_notifier.notify(name.isEmpty() ? tr("Device") : name,
+                          online ? tr("Back online") : tr("Went offline \u26a0"),
+                          QStringLiteral("io.github.todesengelx.ReolinkLinux"),
+                          hostId, rec.channel, rec.timestamp);
 
     if (m_all.size() > kMaxEvents) {
         for (int vi = m_view.size() - 1; vi >= 0 && m_view[vi] >= kMaxEvents; --vi) {

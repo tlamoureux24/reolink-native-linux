@@ -1,5 +1,6 @@
 #include "Paths.h"
 
+#include "AppSettings.h"
 #include <QDir>
 #include <QStandardPaths>
 
@@ -33,6 +34,9 @@ QString Paths::thumbnailsDir()
 
 QString Paths::recordingsDir()
 {
+    const QString custom = AppSettings::customRecordingsDir(); // Settings > Client
+    if (!custom.isEmpty())
+        return ensured(custom);
     return ensured(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation)
                    + QStringLiteral("/Reolink"));
 }

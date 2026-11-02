@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import ReolinkApp
+import ReolinkApp.Core
 
 // Compact month calendar. Emits dateSelected(year, month, day) — month is
 // 1-based. Days that have recordings can be marked via markedDays.
@@ -23,7 +24,11 @@ Column {
     signal monthNavigated(int year, int month)
 
     function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
-    function firstWeekday(y, m) { return new Date(y, m - 1, 1).getDay(); } // 0=Sun
+    // Weeks start on the locale's first day (Monday in French, Sunday in US
+    // English); headers use the locale's own narrow day names.
+    readonly property var loc: Qt.locale(AppSettings.localeName) // the app's language
+    readonly property int weekStart: loc.firstDayOfWeek % 7 // Sunday = 0
+    function firstWeekday(y, m) { return (new Date(y, m - 1, 1).getDay() - weekStart + 7) % 7; }
 
     RowLayout {
         width: parent.width
@@ -40,7 +45,7 @@ Column {
         Text {
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
-            text: Qt.locale().standaloneMonthName(root.month - 1) + " " + root.year
+            text: root.loc.standaloneMonthName(root.month - 1) + " " + root.year
             color: Theme.text
             font.pixelSize: 13
             font.bold: true
@@ -61,7 +66,9 @@ Column {
         columns: 7
         spacing: 2
         Repeater {
-            model: ["S", "M", "T", "W", "T", "F", "S"]
+            model: [0, 1, 2, 3, 4, 5, 6].map(function (i) {
+                return root.loc.dayName((root.weekStart + i) % 7, Locale.NarrowFormat);
+            })
             Text {
                 required property string modelData
                 width: 30; height: 18

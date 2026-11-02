@@ -1,5 +1,6 @@
 #include "StreamPlayer.h"
 
+#include "core/AppSettings.h"
 #include "core/Log.h"
 #include "core/Paths.h"
 
@@ -378,7 +379,7 @@ bool emitFrame(const std::shared_ptr<Session> &s, AVFrame *out,
 // Any failure falls back to software decode, per-stream and silently.
 bool hwDecodeEnabled()
 {
-    return qgetenv("RL_HWDECODE") != "0"; // default on
+    return AppSettings::hardwareDecodingEnabled(); // default on; RL_HWDECODE=0 forces off
 }
 
 AVPixelFormat getHwFormat(AVCodecContext *ctx, const AVPixelFormat *fmts)

@@ -15,6 +15,7 @@ class TrayIcon : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(bool closeToTray READ closeToTray WRITE setCloseToTray NOTIFY closeToTrayChanged)
+    Q_PROPERTY(bool startOnLogin READ startOnLogin WRITE setStartOnLogin NOTIFY startOnLoginChanged)
 
 public:
     explicit TrayIcon(QObject *parent = nullptr);
@@ -30,6 +31,7 @@ public:
 
 signals:
     void closeToTrayChanged();
+    void startOnLoginChanged();
     void openRequested();
     void quitRequested();
 

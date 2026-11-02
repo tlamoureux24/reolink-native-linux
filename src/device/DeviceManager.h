@@ -88,6 +88,9 @@ public:
                                 const QString &password, bool https, int port);
     // User-driven revalidation of a host (sidebar "Reconnect").
     Q_INVOKABLE void reconnect(int row);
+    // Status words are stored translated; re-translate them after a language
+    // switch (problem statuses keep their detail until the next poll).
+    void retranslateStatuses();
     // Fix a host's credentials in place (sidebar "Update credentials…"): stores
     // the new username/password and revalidates. Empty password keeps the stored
     // one (username-only fix).

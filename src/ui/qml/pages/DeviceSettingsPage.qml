@@ -16,6 +16,17 @@ Item {
     property var settings: ({})      // cmd -> value map from the last fetch
     property bool isAdmin: false
     property string status: ""
+    // A message kept on screen must follow a live language switch: remember
+    // how to build it and rebuild it when the language changes.
+    property var _statusFn: null
+    function setStatus(fn) {
+        _statusFn = fn;
+        page.status = fn ? fn() : "";
+    }
+    Connections {
+        target: AppSettings
+        function onLanguageChanged() { if (page._statusFn) page.status = page._statusFn(); }
+    }
 
     // Called from the sidebar's Settings action: focus this device row.
     function showDevice(row) {
@@ -75,7 +86,7 @@ Item {
             // commands — don't fire an empty fetchSettings (it reports "device not
             // ready"); their BC fetches below drive their own loading state.
             var httpCmds = cmdsFor(page.category);
-            page.status = httpCmds.length > 0 ? qsTr("Loading…") : "";
+            page.setStatus(function () { return httpCmds.length > 0 ? qsTr("Loading…") : ""; });
             if (httpCmds.length > 0)
                 Devices.fetchSettings(page.deviceRow, httpCmds);
             if (page.category === "detection") {
@@ -101,7 +112,7 @@ Item {
                 Devices.fetchRecSchedule(page.deviceRow);
             }
         } else {
-            page.status = qsTr("Select a device");
+            page.setStatus(function () { return qsTr("Select a device"); });
         }
     }
     // Nested lookup helper: val("GetEnc","Enc","mainStream","size").
@@ -123,16 +134,16 @@ Item {
                 page.settings = values;
                 page.fetched = true;
                 var f = values["_failed"] || [];
-                page.status = f.length > 0 ? qsTr("%1 unavailable on this device").arg(f.join(", ")) : "";
+                page.setStatus(function () { return f.length > 0 ? qsTr("%1 unavailable on this device").arg(f.join(", ")) : ""; });
             }
         }
         function onSettingsFailed(row, error) {
-            if (row === page.deviceRow) { page.fetched = true; page.status = error; }
+            if (row === page.deviceRow) { page.fetched = true; page.setStatus(function () { return error; }); }
         }
         function onSettingApplied(row, command, ok, error) {
             if (row !== page.deviceRow)
                 return;
-            page.status = ok ? qsTr("%1 saved").arg(command) : (command + ": " + error);
+            page.setStatus(function () { return ok ? qsTr("%1 saved").arg(command) : (command + ": " + error); });
             // Reflect user add/remove/password changes immediately.
             if (ok && (command === "AddUser" || command === "DelUser" || command === "ModifyUser"))
                 page.fetch();

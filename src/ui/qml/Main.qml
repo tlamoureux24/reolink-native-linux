@@ -61,6 +61,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             visible: !window.videoFullscreen
             onFullscreenRequested: window.videoFullscreen = true
+            onSettingsRequested: clientSettings.open()
         }
 
         Rectangle { // divider
@@ -350,5 +351,12 @@ ApplicationWindow {
             else if (!ok)
                 toast.show(qsTr("%1 failed: %2").arg(command).arg(error), true);
         }
+    }
+
+    ClientSettingsDialog {
+        id: clientSettings
+        parent: Overlay.overlay
+        Component.onCompleted: if (typeof openClientSettings !== "undefined" && openClientSettings)
+                                   Qt.callLater(open)
     }
 }

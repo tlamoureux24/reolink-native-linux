@@ -15,14 +15,25 @@ Dialog {
     // on "connecting…" in the sidebar.
     property bool testing: false
     property string errorText: ""
+    // A message kept on screen must follow a live language switch: remember
+    // how to build it and rebuild it when the language changes.
+    property var _errorFn: null
+    function setError(fn) {
+        _errorFn = fn;
+        dialog.errorText = fn ? fn() : "";
+    }
+    Connections {
+        target: AppSettings
+        function onLanguageChanged() { if (dialog._errorFn) dialog.errorText = dialog._errorFn(); }
+    }
 
     function tryAdd() {
         if (testing)
             return;
-        errorText = "";
+        setError(null);
         if (tabs.currentIndex === 1) {
             if (streamUrlField.text.trim().length === 0) {
-                errorText = qsTr("Enter a stream URL or file path.");
+                setError(function () { return qsTr("Enter a stream URL or file path."); });
                 return;
             }
             Devices.addStreamUrl(streamNameField.text, streamUrlField.text);
@@ -30,11 +41,11 @@ Dialog {
             return;
         }
         if (addrField.text.trim().length === 0) {
-            errorText = qsTr("Enter the device's IP address or hostname.");
+            setError(function () { return qsTr("Enter the device's IP address or hostname."); });
             return;
         }
         if (userField.text.trim().length === 0) {
-            errorText = qsTr("Enter the username.");
+            setError(function () { return qsTr("Enter the username."); });
             return;
         }
         testing = true;
@@ -56,16 +67,22 @@ Dialog {
                 dialog.close();
                 return;
             }
+            var addr = addrField.text.trim();
             if (problem === "transport") {
-                dialog.errorText = qsTr("Can't reach %1 — check the address and port, and that the device is powered on and on your network.")
-                    .arg(addrField.text.trim()) + "\n" + message;
+                dialog.setError(function () {
+                    return qsTr("Can't reach %1 — check the address and port, and that the device is powered on and on your network.")
+                        .arg(addr) + "\n" + message;
+                });
             } else if (problem === "auth") {
-                dialog.errorText = qsTr("The device rejected the sign-in: %1").arg(message);
+                dialog.setError(function () { return qsTr("The device rejected the sign-in: %1").arg(message); });
             } else if (problem === "locked") {
-                dialog.errorText = qsTr("The account is locked after too many failed sign-ins. Wait a few minutes (or reboot the device) before trying again. %1").arg(message);
+                dialog.setError(function () {
+                    return qsTr("The account is locked after too many failed sign-ins. Wait a few minutes (or reboot the device) before trying again. %1").arg(message);
+                });
             } else {
-                dialog.errorText = qsTr("Unexpected reply from %1 — is this a Reolink device? %2")
-                    .arg(addrField.text.trim()).arg(message);
+                dialog.setError(function () {
+                    return qsTr("Unexpected reply from %1 — is this a Reolink device? %2").arg(addr).arg(message);
+                });
             }
         }
     }
@@ -390,6 +407,6 @@ Dialog {
         streamUrlField.text = "";
         discoveredModel.clear();
         testing = false;
-        errorText = "";
+        setError(null);
     }
 }

@@ -19,9 +19,20 @@ Popup {
     readonly property int channel: deviceRow >= 0 ? Devices.channelOf(deviceRow) : 0
     property var st: ({})
     property string status: ""
+    // A message kept on screen must follow a live language switch: remember
+    // how to build it and rebuild it when the language changes.
+    property var _statusFn: null
+    function setStatus(fn) {
+        _statusFn = fn;
+        root.status = fn ? fn() : "";
+    }
+    Connections {
+        target: AppSettings
+        function onLanguageChanged() { if (root._statusFn) root.status = root._statusFn(); }
+    }
     property bool loading: false
 
-    width: 320
+    width: 360
     // Sized against the window, not the small pad it opens from: with margins
     // set, Qt keeps the popup inside the window and shrinks it if needed.
     height: Math.min(720, implicitHeight)
@@ -59,7 +70,7 @@ Popup {
         Devices.fetchSettings(deviceRow, cmds, "ptz");
     }
     function apply(cmd, param) {
-        root.status = qsTr("Saving…");
+        root.setStatus(function () { return qsTr("Saving…"); });
         Devices.applySetting(deviceRow, cmd, param);
     }
 
@@ -76,16 +87,16 @@ Popup {
             if (row !== root.deviceRow || values["_tag"] !== "ptz") return;
             root.loading = false;
             root.st = values;
-            if (values["_error"]) root.status = values["_error"];
+            if (values["_error"]) root.setStatus(function () { return values["_error"]; });
         }
         function onSettingApplied(row, command, ok, error) {
             if (row !== root.deviceRow || root.ownCommands.indexOf(command) < 0) return;
-            root.status = ok ? qsTr("Saved") : command + ": " + error;
+            root.setStatus(function () { return ok ? qsTr("Saved") : command + ": " + error; });
             if (ok) refetch.restart();
         }
         function onPtzPatrolDone(row, ok, error) {
             if (row !== root.deviceRow) return;
-            root.status = ok ? "" : qsTr("Patrol: %1").arg(error);
+            root.setStatus(function () { return ok ? "" : qsTr("Patrol: %1").arg(error); });
             refetch.restart();
         }
     }
@@ -112,69 +123,6 @@ Popup {
         TapHandler { enabled: parent.enabledBtn; onTapped: parent.clicked() }
     }
     // Basic-style CheckBox draws its label in the light palette's dark text.
-    component ThemedCheck: CheckBox {
-        id: chk
-        indicator: Rectangle {
-            implicitWidth: 18; implicitHeight: 18
-            x: chk.leftPadding; y: (chk.height - height) / 2
-            radius: 4
-            color: chk.checked ? Theme.accent : Theme.surfaceAlt
-            border.color: chk.checked ? Theme.accent : Theme.border
-            Text { anchors.centerIn: parent; text: "\u2713"; visible: chk.checked
-                   color: Theme.window; font.pixelSize: 12; font.bold: true }
-        }
-        contentItem: Text {
-            text: chk.text; color: Theme.text; font.pixelSize: 12
-            leftPadding: chk.indicator.width + 6; verticalAlignment: Text.AlignVCenter
-        }
-    }
-    component ThemedCombo: ComboBox {
-        id: cmb
-        implicitWidth: 80; implicitHeight: 26
-        background: Rectangle { color: Theme.surfaceAlt; border.color: Theme.border; radius: 4 }
-        contentItem: Text {
-            text: cmb.displayText; color: Theme.text; font.pixelSize: 12
-            leftPadding: 8; verticalAlignment: Text.AlignVCenter
-        }
-        indicator: Text {
-            x: cmb.width - width - 8; y: (cmb.height - height) / 2
-            text: "\u25be"; color: Theme.textMuted; font.pixelSize: 11
-        }
-        popup.background: Rectangle { color: Theme.surface; border.color: Theme.border; radius: 4 }
-        delegate: ItemDelegate {
-            required property var modelData
-            required property int index
-            width: cmb.width
-            contentItem: Text { text: modelData; color: Theme.text; font.pixelSize: 12 }
-            background: Rectangle { color: highlighted ? Theme.accentDim : "transparent" }
-            highlighted: cmb.highlightedIndex === index
-        }
-    }
-    component SpinStep: Rectangle {
-        property string glyph: ""
-        property bool pressed: false
-        implicitWidth: 24; implicitHeight: 26; radius: 4
-        color: pressed ? Theme.accentDim : Theme.surface
-        border.color: Theme.border
-        Text { anchors.centerIn: parent; text: parent.glyph; color: Theme.text; font.pixelSize: 13 }
-    }
-    component ThemedSpin: SpinBox {
-        id: spin
-        implicitWidth: 96
-        implicitHeight: 26
-        editable: true
-        background: Rectangle { color: Theme.surfaceAlt; border.color: Theme.border; radius: 4 }
-        contentItem: TextInput {
-            text: spin.displayText
-            color: Theme.text; font.pixelSize: 12
-            horizontalAlignment: Qt.AlignHCenter; verticalAlignment: Qt.AlignVCenter
-            readOnly: !spin.editable
-            validator: spin.validator
-            inputMethodHints: Qt.ImhDigitsOnly
-        }
-        up.indicator: SpinStep { x: spin.width - width; glyph: "+"; pressed: spin.up.pressed }
-        down.indicator: SpinStep { x: 0; glyph: "−"; pressed: spin.down.pressed }
-    }
     component LabeledSlider: RowLayout {
         property string label: ""
         property int from: 0
@@ -183,7 +131,7 @@ Popup {
         signal commit(int v)
         Layout.fillWidth: true
         spacing: 6
-        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 70 }
+        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 110 }
         Slider {
             id: s
             Layout.fillWidth: true
@@ -269,7 +217,7 @@ Popup {
                 RowLayout {
                     visible: root.cap("capAutoFocus") && root.v("GetAutoFocus") !== undefined
                     Layout.leftMargin: Theme.spacing; Layout.rightMargin: Theme.spacing
-                    Text { text: qsTr("Autofocus"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 70 }
+                    Text { text: qsTr("Autofocus"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 110 }
                     Switch {
                         checked: root.v("GetAutoFocus", "AutoFocus", {}).disable === 0
                         onToggled: root.apply("SetAutoFocus",
@@ -398,7 +346,7 @@ Popup {
                             readonly property bool inRoute: patrol.draft[modelData.id] !== undefined
                             Layout.fillWidth: true
                             spacing: 4
-                            ThemedCheck {
+                            ThemedCheckBox {
                                 checked: parent.inRoute
                                 onToggled: {
                                     var d = Object.assign({}, patrol.draft);
@@ -408,7 +356,7 @@ Popup {
                             }
                             Text { text: modelData.name; color: Theme.text; font.pixelSize: 12
                                    elide: Text.ElideRight; Layout.fillWidth: true }
-                            ThemedSpin {
+                            ThemedSpinBox {
                                 enabled: parent.inRoute
                                 from: 1; to: 300
                                 value: parent.inRoute ? patrol.draft[modelData.id] : 10
@@ -456,14 +404,14 @@ Popup {
                     }
                     RowLayout {
                         spacing: 6
-                        Text { text: qsTr("Enabled"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 70 }
+                        Text { text: qsTr("Enabled"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 110 }
                         Switch {
                             checked: parent.parent.g.benable === 1
                             onToggled: root.apply("SetPtzGuard", { PtzGuard: {
                                 channel: root.channel, cmdStr: "setPos", benable: checked ? 1 : 0 } })
                         }
                         Text { text: qsTr("after"); color: Theme.textMuted; font.pixelSize: 12 }
-                        ThemedSpin {
+                        ThemedSpinBox {
                             id: guardSpin
                             from: 10; to: 300; implicitWidth: 100
                             value: parent.parent.g.timeout || 60
@@ -509,7 +457,7 @@ Popup {
                     }
                     Section { text: qsTr("Auto-tracking") }
                     RowLayout {
-                        Text { text: qsTr("Follow"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 70 }
+                        Text { text: qsTr("Follow"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 110 }
                         Switch {
                             checked: track.on
                             onToggled: track.setTrack(track.smart ? { bSmartTrack: checked ? 1 : 0 }
@@ -523,7 +471,7 @@ Popup {
                             model: [{ key: "people", label: qsTr("People") },
                                     { key: "vehicle", label: qsTr("Vehicles") },
                                     { key: "dog_cat", label: qsTr("Animals") }]
-                            delegate: ThemedCheck {
+                            delegate: ThemedCheckBox {
                                 required property var modelData
                                 visible: track.detect[modelData.key] === 1 && track.types[modelData.key] !== undefined
                                 text: modelData.label
@@ -540,7 +488,7 @@ Popup {
                         visible: track.ai.aiStopBackTime !== undefined
                         Text { text: qsTr("Return when the target stops for"); color: Theme.textMuted
                                font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                        ThemedCombo {
+                        ThemedComboBox {
                             implicitWidth: 80
                             model: track.backTimes.map(function (s) { return s + " s"; })
                             currentIndex: Math.max(0, track.backTimes.indexOf(track.ai.aiStopBackTime))
@@ -552,7 +500,7 @@ Popup {
                         readonly property var times: track.aiRange.aiDisappearBackTime || [10, 20, 30, 60]
                         Text { text: qsTr("Return when the target is lost for"); color: Theme.textMuted
                                font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                        ThemedCombo {
+                        ThemedComboBox {
                             implicitWidth: 80
                             model: parent.times.map(function (s) { return s + " s"; })
                             currentIndex: Math.max(0, parent.times.indexOf(track.ai.aiDisappearBackTime))
