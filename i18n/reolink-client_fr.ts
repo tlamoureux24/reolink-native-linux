@@ -9,7 +9,7 @@
         <translation>Ajouter un appareil</translation>
     </message>
     <message>
-        <location line="+16" />
+        <location line="+27" />
         <source>Enter a stream URL or file path.</source>
         <translation>Saisissez l'URL d'un flux ou le chemin d'un fichier.</translation>
     </message>
@@ -24,22 +24,22 @@
         <translation>Saisissez le nom d'utilisateur.</translation>
     </message>
     <message>
-        <location line="+23" />
+        <location line="+25" />
         <source>Can't reach %1 — check the address and port, and that the device is powered on and on your network.</source>
         <translation>Impossible de joindre %1 — vérifiez l'adresse et le port, et que l'appareil est allumé et sur votre réseau.</translation>
     </message>
     <message>
-        <location line="+3" />
+        <location line="+4" />
         <source>The device rejected the sign-in: %1</source>
         <translation>L'appareil a refusé la connexion : %1</translation>
     </message>
     <message>
-        <location line="+2" />
+        <location line="+3" />
         <source>The account is locked after too many failed sign-ins. Wait a few minutes (or reboot the device) before trying again. %1</source>
         <translation>Le compte est verrouillé après trop d'échecs de connexion. Attendez quelques minutes (ou redémarrez l'appareil) avant de réessayer. %1</translation>
     </message>
     <message>
-        <location line="+2" />
+        <location line="+4" />
         <source>Unexpected reply from %1 — is this a Reolink device? %2</source>
         <translation>Réponse inattendue de %1 — est-ce bien un appareil Reolink ? %2</translation>
     </message>
@@ -369,7 +369,7 @@
 <context>
     <name>DeviceSettingsPage</name>
     <message>
-        <location filename="../src/ui/qml/pages/DeviceSettingsPage.qml" line="+27" />
+        <location filename="../src/ui/qml/pages/DeviceSettingsPage.qml" line="+45" />
         <source>Image</source>
         <translation>Image</translation>
     </message>
@@ -392,6 +392,11 @@
         <location line="+1" />
         <source>Detection / Alerts</source>
         <translation>Détection / Alertes</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Lights &amp; siren</source>
+        <translation>Éclairage et sirène</translation>
     </message>
     <message>
         <location line="+1" />
@@ -419,14 +424,14 @@
         <translation>Système</translation>
     </message>
     <message>
-        <location line="+42" />
-        <location line="+727" />
+        <location line="+52" />
+        <location line="+1147" />
         <location line="+64" />
         <source>Loading…</source>
         <translation>Chargement…</translation>
     </message>
     <message>
-        <location line="-765" />
+        <location line="-1185" />
         <source>Select a device</source>
         <translation>Choisir un appareil</translation>
     </message>
@@ -436,12 +441,12 @@
         <translation>%1 indisponible sur cet appareil</translation>
     </message>
     <message>
-        <location line="+9" />
+        <location line="+16" />
         <source>%1 saved</source>
         <translation>%1 enregistré</translation>
     </message>
     <message>
-        <location line="+65" />
+        <location line="+71" />
         <source>Camera:</source>
         <translation>Caméra :</translation>
     </message>
@@ -451,7 +456,42 @@
         <translation>Lecture seule (compte non administrateur)</translation>
     </message>
     <message>
-        <location line="+76" />
+        <location line="+88" />
+        <source>Updating… %1%  — the camera restarts when done</source>
+        <translation>Mise à jour… %1 %  — la caméra redémarre à la fin</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Checking…</source>
+        <translation>Vérification…</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>A new firmware version is available.</source>
+        <translation>Une nouvelle version du firmware est disponible.</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>The firmware is up to date.</source>
+        <translation>Le firmware est à jour.</translation>
+    </message>
+    <message>
+        <location line="+9" />
+        <source>Update the firmware of %1?</source>
+        <translation>Mettre à jour le firmware de %1 ?</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>The camera downloads the update from Reolink, installs it and restarts. It is offline for a few minutes; do not unplug it meanwhile.</source>
+        <translation>La caméra télécharge la mise à jour chez Reolink, l'installe puis redémarre. Elle est hors ligne quelques minutes ; ne la débranchez pas pendant ce temps.</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Update</source>
+        <translation>Mettre à jour</translation>
+    </message>
+    <message>
+        <location line="+41" />
         <source>Format %1?</source>
         <translation>Formater %1 ?</translation>
     </message>
@@ -466,17 +506,102 @@
         <translation>Formater le disque</translation>
     </message>
     <message>
-        <location line="+77" />
+        <location line="+91" />
+        <location line="+12" />
+        <source>Auto</source>
+        <translation>Auto</translation>
+    </message>
+    <message>
+        <location line="-11" />
+        <source>Manual</source>
+        <translation>Manuel</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>On</source>
+        <translation>Activé</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <location line="+18" />
+        <source>Off</source>
+        <translation>Désactivé</translation>
+    </message>
+    <message>
+        <location line="-17" />
+        <source>Other</source>
+        <translation>Autre</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Low noise</source>
+        <translation>Faible bruit</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Anti-smearing (fast motion)</source>
+        <translation>Anti-traînée (mouvements rapides)</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Backlight compensation (BLC)</source>
+        <translation>Compensation de contre-jour (BLC)</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Dynamic range (DRC)</source>
+        <translation>Plage dynamique (DRC)</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <location line="+4" />
+        <source>Colour</source>
+        <translation>Couleur</translation>
+    </message>
+    <message>
+        <location line="-3" />
+        <location line="+4" />
+        <source>Black &amp; white</source>
+        <translation>Noir et blanc</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Low</source>
+        <translation>Bas</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Medium</source>
+        <translation>Moyen</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>High</source>
+        <translation>Haut</translation>
+    </message>
+    <message>
+        <location line="+5" />
+        <source>On detection, at night</source>
+        <translation>Sur détection, la nuit</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>On a schedule</source>
+        <translation>Selon un horaire</translation>
+    </message>
+    <message>
+        <location line="+14" />
         <source>Image settings couldn't be read from the camera.</source>
         <translation>Impossible de lire les réglages d'image de la caméra.</translation>
     </message>
     <message>
-        <location line="+9" />
+        <location line="+13" />
+        <location line="+293" />
         <source>Brightness</source>
         <translation>Luminosité</translation>
     </message>
     <message>
-        <location line="+5" />
+        <location line="-288" />
         <source>Contrast</source>
         <translation>Contraste</translation>
     </message>
@@ -511,12 +636,67 @@
         <translation>Seuil jour/nuit</translation>
     </message>
     <message>
-        <location line="+7" />
+        <location line="+6" />
         <source>Over the native Baichuan protocol — no web-server timeouts.</source>
         <translation>Via le protocole natif Baichuan — sans délais d'attente du serveur web.</translation>
     </message>
     <message>
-        <location line="+12" />
+        <location line="+9" />
+        <source>Advanced</source>
+        <translation>Avancé</translation>
+    </message>
+    <message>
+        <location line="+7" />
+        <source>Exposure</source>
+        <translation>Exposition</translation>
+    </message>
+    <message>
+        <location line="+8" />
+        <source>Anti-flicker</source>
+        <translation>Anti-scintillement</translation>
+    </message>
+    <message>
+        <location line="+9" />
+        <source>Backlight</source>
+        <translation>Contre-jour</translation>
+    </message>
+    <message>
+        <location line="+9" />
+        <source>Backlight strength</source>
+        <translation>Intensité du contre-jour</translation>
+    </message>
+    <message>
+        <location line="+14" />
+        <source>White balance</source>
+        <translation>Balance des blancs</translation>
+    </message>
+    <message>
+        <location line="+7" />
+        <source>Red gain</source>
+        <translation>Gain rouge</translation>
+    </message>
+    <message>
+        <location line="+8" />
+        <source>Blue gain</source>
+        <translation>Gain bleu</translation>
+    </message>
+    <message>
+        <location line="+9" />
+        <source>3D noise reduction</source>
+        <translation>Réduction de bruit 3D</translation>
+    </message>
+    <message>
+        <location line="+6" />
+        <source>Infrared lights</source>
+        <translation>Infrarouges</translation>
+    </message>
+    <message>
+        <location line="+7" />
+        <source>Status LED</source>
+        <translation>LED d'état</translation>
+    </message>
+    <message>
+        <location line="+16" />
         <source>Motion detection</source>
         <translation>Détection de mouvement</translation>
     </message>
@@ -532,32 +712,34 @@
     </message>
     <message>
         <location line="+1" />
-        <location line="+242" />
+        <location line="+431" />
         <source>Edit…</source>
         <translation>Modifier…</translation>
     </message>
     <message>
-        <location line="-236" />
+        <location line="-425" />
         <source>Smart (AI) detection</source>
         <translation>Détection intelligente (IA)</translation>
     </message>
     <message>
         <location line="+2" />
+        <location line="+147" />
         <source>People</source>
         <translation>Personnes</translation>
     </message>
     <message>
-        <location line="+6" />
+        <location line="-141" />
         <source>  People sensitivity</source>
         <translation>  Sensibilité personnes</translation>
     </message>
     <message>
         <location line="+7" />
+        <location line="+134" />
         <source>Vehicles</source>
         <translation>Véhicules</translation>
     </message>
     <message>
-        <location line="+6" />
+        <location line="-128" />
         <source>  Vehicle sensitivity</source>
         <translation>  Sensibilité véhicules</translation>
     </message>
@@ -602,7 +784,67 @@
         <translation>Les zones de détection et la sensibilité/les plannings par type sont prévus.</translation>
     </message>
     <message>
-        <location line="+12" />
+        <location line="+30" />
+        <source>This camera reports no floodlight, siren or speaker settings.</source>
+        <translation>Cette caméra ne signale aucun réglage de projecteur, de sirène ou de haut-parleur.</translation>
+    </message>
+    <message>
+        <location line="+6" />
+        <source>Floodlight</source>
+        <translation>Projecteur</translation>
+    </message>
+    <message>
+        <location line="+4" />
+        <source>Night mode</source>
+        <translation>Mode nuit</translation>
+    </message>
+    <message>
+        <location line="+18" />
+        <source>On from</source>
+        <translation>Allumé de</translation>
+    </message>
+    <message>
+        <location line="+11" />
+        <source>to</source>
+        <translation>à</translation>
+    </message>
+    <message>
+        <location line="+11" />
+        <source>Turn on for</source>
+        <translation>Allumer pour</translation>
+    </message>
+    <message>
+        <location line="+3" />
+        <source>Animals</source>
+        <translation>Animaux</translation>
+    </message>
+    <message>
+        <location line="+18" />
+        <source>Siren</source>
+        <translation>Sirène</translation>
+    </message>
+    <message>
+        <location line="+4" />
+        <source>Sound the siren on alarm</source>
+        <translation>Déclencher la sirène en cas d'alarme</translation>
+    </message>
+    <message>
+        <location line="+7" />
+        <source>Test it from Live View with the siren button.</source>
+        <translation>Testez-la depuis le Direct avec le bouton sirène.</translation>
+    </message>
+    <message>
+        <location line="+5" />
+        <source>Speaker</source>
+        <translation>Haut-parleur</translation>
+    </message>
+    <message>
+        <location line="+4" />
+        <source>Volume</source>
+        <translation>Volume</translation>
+    </message>
+    <message>
+        <location line="+17" />
         <source>Main stream (Clear)</source>
         <translation>Flux principal (Clair)</translation>
     </message>
@@ -637,7 +879,27 @@
         <translation>Nom de la caméra</translation>
     </message>
     <message>
+        <location line="+15" />
+        <source>Privacy masks</source>
+        <translation>Masques de confidentialité</translation>
+    </message>
+    <message>
+        <location line="+4" />
+        <source>No area drawn yet</source>
+        <translation>Aucune zone dessinée</translation>
+    </message>
+    <message numerus="yes">
+        <location line="+0" />
+        <source>%n area(s) covered</source>
+        <translation><numerusform>%n zone masquée</numerusform><numerusform>%n zones masquées</numerusform></translation>
+    </message>
+    <message>
         <location line="+13" />
+        <source>Edit areas…</source>
+        <translation>Modifier les zones…</translation>
+    </message>
+    <message>
+        <location line="+8" />
         <source>Brightness, contrast, day/night and IR settings load from GetImage/GetIsp.</source>
         <translation>Luminosité, contraste, jour/nuit et infrarouge proviennent de GetImage/GetIsp.</translation>
     </message>
@@ -667,7 +929,32 @@
         <translation>Canaux</translation>
     </message>
     <message>
-        <location line="+13" />
+        <location line="+5" />
+        <source>Firmware update</source>
+        <translation>Mise à jour du firmware</translation>
+    </message>
+    <message>
+        <location line="+3" />
+        <source>Install updates automatically</source>
+        <translation>Installer les mises à jour automatiquement</translation>
+    </message>
+    <message>
+        <location line="+9" />
+        <source>Online check</source>
+        <translation>Vérification en ligne</translation>
+    </message>
+    <message>
+        <location line="+6" />
+        <source>Check now</source>
+        <translation>Vérifier maintenant</translation>
+    </message>
+    <message>
+        <location line="+10" />
+        <source>Install update…</source>
+        <translation>Installer la mise à jour…</translation>
+    </message>
+    <message>
+        <location line="+16" />
         <source>Reboot device</source>
         <translation>Redémarrer l'appareil</translation>
     </message>
@@ -1409,7 +1696,7 @@
 <context>
     <name>PlaybackPage</name>
     <message>
-        <location filename="../src/ui/qml/pages/PlaybackPage.qml" line="+145" />
+        <location filename="../src/ui/qml/pages/PlaybackPage.qml" line="+158" />
         <source>Camera %1</source>
         <translation>Caméra %1</translation>
     </message>
@@ -1632,6 +1919,49 @@
     </message>
 </context>
 <context>
+    <name>PrivacyMaskDialog</name>
+    <message>
+        <location filename="../src/ui/qml/dialogs/PrivacyMaskDialog.qml" line="+27" />
+        <source>Privacy masks</source>
+        <translation>Masques de confidentialité</translation>
+    </message>
+    <message>
+        <location line="+41" />
+        <source>Drag on the image to cover an area (up to %1). Right-click an area to remove it. Covered areas are blacked out in live view and recordings.</source>
+        <translation>Glissez sur l'image pour masquer une zone (jusqu'à %1). Clic droit sur une zone pour la supprimer. Les zones masquées sont noircies dans le direct et les enregistrements.</translation>
+    </message>
+    <message>
+        <location line="+30" />
+        <source>Loading camera image…</source>
+        <translation>Chargement de l'image de la caméra…</translation>
+    </message>
+    <message>
+        <location line="+77" />
+        <source>Masks enabled</source>
+        <translation>Masques activés</translation>
+    </message>
+    <message>
+        <location line="+4" />
+        <source>%1 / %2</source>
+        <translation>%1 / %2</translation>
+    </message>
+    <message>
+        <location line="+2" />
+        <source>Clear all</source>
+        <translation>Tout effacer</translation>
+    </message>
+    <message>
+        <location line="+2" />
+        <source>Cancel</source>
+        <translation>Annuler</translation>
+    </message>
+    <message>
+        <location line="+1" />
+        <source>Save</source>
+        <translation>Enregistrer</translation>
+    </message>
+</context>
+<context>
     <name>PropertiesDialog</name>
     <message>
         <location filename="../src/ui/qml/dialogs/PropertiesDialog.qml" line="+24" />
@@ -1660,7 +1990,7 @@
 <context>
     <name>PtzPanel</name>
     <message>
-        <location filename="../src/ui/qml/components/PtzPanel.qml" line="+62" />
+        <location filename="../src/ui/qml/components/PtzPanel.qml" line="+73" />
         <source>Saving…</source>
         <translation>Enregistrement…</translation>
     </message>

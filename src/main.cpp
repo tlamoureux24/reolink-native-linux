@@ -189,6 +189,11 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(
         QStringLiteral("livePtzRow"),
         qEnvironmentVariableIsSet("RL_LIVE_PTZ") ? qEnvironmentVariableIntValue("RL_LIVE_PTZ") : -1);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("settingsCategory"), qEnvironmentVariable("RL_SETTINGS_CATEGORY"));
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("settingsRow"),
+        qEnvironmentVariableIsSet("RL_SETTINGS_ROW") ? qEnvironmentVariableIntValue("RL_SETTINGS_ROW") : -1);
     // RL_CLIENT_SETTINGS=1: open the client settings dialog (screenshots).
     engine.rootContext()->setContextProperty(
         QStringLiteral("openClientSettings"), qEnvironmentVariableIsSet("RL_CLIENT_SETTINGS"));

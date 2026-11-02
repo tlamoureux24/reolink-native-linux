@@ -13,6 +13,13 @@ Item {
 
     property int deviceRow: -1
     property string category: "system"
+    // Test hooks (RL_SETTINGS_CATEGORY / RL_SETTINGS_ROW) for --smoke screenshots.
+    Component.onCompleted: {
+        if (typeof settingsCategory !== "undefined" && settingsCategory !== "")
+            category = settingsCategory;
+        if (typeof settingsRow !== "undefined" && settingsRow >= 0)
+            Qt.callLater(function () { page.showDevice(settingsRow); });
+    }
     property var settings: ({})      // cmd -> value map from the last fetch
     property bool isAdmin: false
     property string status: ""
@@ -35,17 +42,28 @@ Item {
     }
 
     readonly property var categories: [
-        { key: "image",     label: qsTr("Image"),           cmds: [] },
-        { key: "display",   label: qsTr("Display / OSD"),    cmds: ["GetOsd"] },
+        { key: "image",     label: qsTr("Image"),           cmds: ["GetIsp", "GetIrLights", "GetPowerLed"] },
+        { key: "display",   label: qsTr("Display / OSD"),    cmds: ["GetOsd", "GetMask"] },
         { key: "encoding",  label: qsTr("Encoding"),        cmds: ["GetEnc"] },
         { key: "recording", label: qsTr("Recording"),       cmds: [] },
         { key: "detection", label: qsTr("Detection / Alerts"), cmds: ["GetAiCfg"] },
+        { key: "lights",    label: qsTr("Lights & siren"),  cmds: ["GetWhiteLed", "GetAudioAlarmV20", "GetAudioCfg"] },
         { key: "network",   label: qsTr("Network"),         cmds: ["GetLocalLink", "GetNetPort"] },
         { key: "storage",   label: qsTr("Storage"),         cmds: ["GetHddInfo"] },
         { key: "users",     label: qsTr("Users"),           cmds: ["GetUser"] },
         { key: "time",      label: qsTr("Time"),            cmds: ["GetTime", "GetNtp"] },
-        { key: "system",    label: qsTr("System"),          cmds: ["GetDevInfo", "GetTime"] }
+        { key: "system",    label: qsTr("System"),          cmds: ["GetDevInfo", "GetTime", "GetAutoUpgrade"] }
     ]
+
+    readonly property var httpSetters: ["SetIsp", "SetIrLights", "SetPowerLed", "SetMask", "SetWhiteLed",
+                                        "SetAudioAlarmV20", "SetAudioCfg", "SetAutoUpgrade"]
+    function ch() { return Devices.channelOf(page.deviceRow); }
+    // Range block of a Get command ("GetIspRange"), or {} when absent.
+    function rng() {
+        var o = page.settings[arguments[0] + "Range"];
+        for (var i = 1; i < arguments.length && o; i++) o = o[arguments[i]];
+        return o === undefined || o === null ? ({}) : o;
+    }
 
     function cmdsFor(key) {
         for (var i = 0; i < categories.length; i++)
@@ -140,6 +158,13 @@ Item {
         function onSettingsFailed(row, error) {
             if (row === page.deviceRow) { page.fetched = true; page.setStatus(function () { return error; }); }
         }
+        // A device's rows are re-inserted once it finishes signing in. If this
+        // page asked before that, its fetch failed with "device not ready" and
+        // nothing retried: fetch again when the shown device has no settings yet.
+        function onRowsInserted() {
+            if (page.deviceRow >= 0 && Object.keys(page.settings).length === 0)
+                Qt.callLater(page.fetch);
+        }
         function onSettingApplied(row, command, ok, error) {
             if (row !== page.deviceRow)
                 return;
@@ -151,6 +176,12 @@ Item {
             // the device's confirmed state.
             if (command === "push" || command === "email" || command === "ftp")
                 Devices.fetchAlerts(page.deviceRow);
+            // HTTP setters of the lot-3 panels: re-read so controls show the
+            // device's confirmed values (without clearing the page).
+            if (command === "UpgradeOnline" && !ok)
+                page.fwUpgrading = false; // refused: nothing is installing
+            if (ok && page.httpSetters.indexOf(command) >= 0)
+                Devices.fetchSettings(page.deviceRow, page.cmdsFor(page.category));
             if (command === "Set25")   // image write over Baichuan
                 Devices.fetchBcConfig(page.deviceRow, 26);
             if (command === "Set55")   // recording write over Baichuan
@@ -294,6 +325,7 @@ Item {
                         case "encoding": return encodingPanel;
                         case "display": return displayPanel;
                         case "detection": return detectionPanel;
+                        case "lights": return lightsPanel;
                         case "recording": return recordingPanel;
                         case "network": return networkPanel;
                         case "storage": return storagePanel;
@@ -311,6 +343,7 @@ Item {
     // Add-user / change-password dialog for the Users panel.
     UserEditDialog { id: userDialog; deviceRow: page.deviceRow }
     DetectionZoneDialog { id: zoneDialog }
+    PrivacyMaskDialog { id: maskDialog }
     ScheduleDialog { id: schedDialog }
 
     // Confirmation sheet for destructive actions (e.g. disk format).
@@ -319,8 +352,73 @@ Item {
         onConfirmed: (payload) => {
             if (payload && payload.action === "format")
                 Devices.applySetting(page.deviceRow, "Format", { "HddInfo": { "id": [payload.id] } });
+            if (payload && payload.action === "firmware")
+                page.startFirmwareUpdate();
         }
     }
+    // ---- Firmware (CheckFirmware / UpgradeOnline / UpgradeStatus) ----
+    // The camera downloads and installs Reolink's newer firmware itself; it
+    // reboots at the end. Offered only when CheckFirmware reports one.
+    property bool fwNew: false
+    property bool fwChecking: false
+    property bool fwUpgrading: false
+    property int fwPercent: 0
+    readonly property string fwText: {
+        AppSettings.localeName; // re-render on a language switch
+        if (fwUpgrading) return qsTr("Updating… %1%  — the camera restarts when done").arg(fwPercent);
+        if (fwChecking) return qsTr("Checking…");
+        if (fwChecked) return fwNew ? qsTr("A new firmware version is available.")
+                                    : qsTr("The firmware is up to date.");
+        return "";
+    }
+    property bool fwChecked: false
+    function checkFirmware() {
+        fwChecking = true;
+        Devices.fetchSettings(page.deviceRow, ["CheckFirmware"], "fw");
+    }
+    function confirmFirmware() {
+        confirmDialog.message = qsTr("Update the firmware of %1?").arg(Devices.nameAt(page.deviceRow));
+        confirmDialog.detail = qsTr("The camera downloads the update from Reolink, installs it and restarts. It is offline for a few minutes; do not unplug it meanwhile.");
+        confirmDialog.confirmLabel = qsTr("Update");
+        confirmDialog.payload = { action: "firmware" };
+        confirmDialog.open();
+    }
+    function startFirmwareUpdate() {
+        fwUpgrading = true;
+        fwPercent = 0;
+        Devices.applySetting(page.deviceRow, "UpgradeOnline", {});
+        fwPoll.restart();
+    }
+    Timer {
+        id: fwPoll
+        interval: 5000; repeat: true
+        property int ticks: 0
+        onTriggered: {
+            if (++ticks > 60 || !page.fwUpgrading) { stop(); ticks = 0; page.fwUpgrading = false; return; }
+            Devices.fetchSettings(page.deviceRow, ["UpgradeStatus"], "fw");
+        }
+    }
+    Connections {
+        target: Devices
+        function onSettingsLoaded(row, values) {
+            if (row !== page.deviceRow || values["_tag"] !== "fw") return;
+            if (values["CheckFirmware"] !== undefined) {
+                page.fwChecking = false;
+                page.fwChecked = true;
+                page.fwNew = values["CheckFirmware"].newFirmware === 1;
+            }
+            if (values["UpgradeStatus"] !== undefined) {
+                var st = values["UpgradeStatus"].Status || {};
+                page.fwPercent = st.Persent || page.fwPercent;
+            }
+            if (values["_error"] && page.fwChecking) {
+                page.fwChecking = false;
+                page.setStatus(function () { return values["_error"]; });
+            }
+        }
+    }
+    onDeviceRowChanged: { fwNew = false; fwChecked = false; fwChecking = false; fwUpgrading = false; }
+
     function confirmFormat(diskId, label) {
         confirmDialog.message = qsTr("Format %1?").arg(label);
         confirmDialog.detail = qsTr("This permanently erases ALL recordings on the disk and cannot be undone.");
@@ -346,7 +444,8 @@ Item {
         signal commit(int v)
         Layout.fillWidth: true
         spacing: Theme.spacing
-        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 150 }
+        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 170
+               wrapMode: Text.WordWrap }
         Slider {
             id: sld
             Layout.fillWidth: true
@@ -368,7 +467,8 @@ Item {
         signal commit(string v)
         Layout.fillWidth: true
         spacing: Theme.spacing
-        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 150 }
+        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 170
+               wrapMode: Text.WordWrap }
         ComboBox {
             id: cb
             Layout.preferredWidth: 200
@@ -387,9 +487,62 @@ Item {
         signal commit(bool v)
         Layout.fillWidth: true
         spacing: Theme.spacing
-        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 150 }
+        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 170
+               wrapMode: Text.WordWrap }
         Switch { checked: parent.checked; enabled: parent.enabledCtl; onToggled: parent.commit(checked) }
         Item { Layout.fillWidth: true }
+    }
+
+    // A dropdown over device values with readable, translated labels. `values`
+    // usually comes from the command's range block, so only what the camera
+    // accepts is offered.
+    component ChoiceRow: RowLayout {
+        property string label: ""
+        property var values: []
+        property string value: ""
+        property bool enabledCtl: true
+        signal commit(string v)
+        Layout.fillWidth: true
+        spacing: Theme.spacing
+        Text { text: parent.label; color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 170
+               wrapMode: Text.WordWrap }
+        ThemedComboBox {
+            Layout.preferredWidth: 240
+            enabled: parent.enabledCtl
+            model: parent.values.map(page.choiceLabel)
+            currentIndex: Math.max(0, parent.values.indexOf(parent.value))
+            onActivated: (i) => parent.commit(parent.values[i])
+        }
+        Item { Layout.fillWidth: true }
+    }
+    function choiceLabel(v) {
+        switch (String(v)) {
+        case "Auto": return qsTr("Auto");
+        case "Manual": return qsTr("Manual");
+        case "On": return qsTr("On");
+        case "Off": return qsTr("Off");
+        case "Other": return qsTr("Other");
+        case "LowNoise": return qsTr("Low noise");
+        case "Anti-Smearing": return qsTr("Anti-smearing (fast motion)");
+        case "BackLightControl": return qsTr("Backlight compensation (BLC)");
+        case "DynamicRangeControl": return qsTr("Dynamic range (DRC)");
+        case "Color": return qsTr("Colour");
+        case "Black&White": return qsTr("Black & white");
+        // Baichuan day/night values (image panel)
+        case "auto": return qsTr("Auto");
+        case "color": return qsTr("Colour");
+        case "blackAndWhite": return qsTr("Black & white");
+        case "low": return qsTr("Low");
+        case "medium": return qsTr("Medium");
+        case "high": return qsTr("High");
+        case "50HZ": return "50 Hz";
+        case "60HZ": return "60 Hz";
+        // Floodlight night modes (WhiteLed.mode)
+        case "0": return qsTr("Off");
+        case "1": return qsTr("On detection, at night");
+        case "3": return qsTr("On a schedule");
+        default: return String(v);
+        }
     }
 
     // ---- Image panel (over native Baichuan — no HTTP 502) ----------------
@@ -405,9 +558,13 @@ Item {
                        color: Theme.text; font.pixelSize: 14; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                 Item { Layout.fillHeight: true }
             }
-            ColumnLayout {
+            ScrollView {
                 anchors.fill: parent
                 visible: !parent.noData
+                contentWidth: availableWidth
+                clip: true
+            ColumnLayout {
+                width: parent.width
                 spacing: Theme.spacing
                 SliderRow {
                     label: qsTr("Brightness"); enabledCtl: page.isAdmin
@@ -441,23 +598,119 @@ Item {
                     onCommit: (v) => Devices.writeBcConfig(page.deviceRow, 26, 25, { "flip": v ? 1 : 0 })
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
-                EnumRow {
+                ChoiceRow {
                     label: qsTr("Day / Night"); enabledCtl: page.isAdmin
-                    options: ["auto", "color", "blackAndWhite"]
+                    values: ["auto", "color", "blackAndWhite"]
                     value: page.img["DayNight/mode"] || "auto"
                     onCommit: (v) => Devices.writeBcConfig(page.deviceRow, 26, 25, { "DayNight/mode": v })
                 }
-                EnumRow {
+                ChoiceRow {
                     label: qsTr("Day/Night threshold"); enabledCtl: page.isAdmin
-                    options: ["low", "medium", "high"]
+                    values: ["low", "medium", "high"]
                     value: page.img["DayNight/Threshold"] || "medium"
                     onCommit: (v) => Devices.writeBcConfig(page.deviceRow, 26, 25, { "DayNight/Threshold": v })
                 }
-                Item { Layout.fillHeight: true }
                 Text {
                     text: qsTr("Over the native Baichuan protocol — no web-server timeouts.")
                     color: Theme.textMuted; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap
                 }
+
+                // ---- Advanced (HTTP GetIsp / GetIrLights / GetPowerLed) ----
+                // Each control appears only when the camera reports the field,
+                // and offers only the values its range block allows.
+                Text {
+                    visible: page.has("GetIsp")
+                    text: qsTr("Advanced"); color: Theme.text; font.pixelSize: 14; font.bold: true
+                    Layout.topMargin: Theme.spacing
+                }
+                Rectangle { visible: page.has("GetIsp"); Layout.fillWidth: true; height: 1; color: Theme.border }
+                ChoiceRow {
+                    readonly property var isp: page.val("GetIsp", "Isp") || ({})
+                    visible: isp.exposure !== undefined
+                    label: qsTr("Exposure"); enabledCtl: page.isAdmin
+                    values: page.rng("GetIsp", "Isp", "exposure").length ? page.rng("GetIsp", "Isp", "exposure") : ["Auto"]
+                    value: isp.exposure || ""
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": { "channel": page.ch(), "exposure": v } })
+                }
+                ChoiceRow {
+                    readonly property var isp: page.val("GetIsp", "Isp") || ({})
+                    visible: isp.antiFlicker !== undefined
+                    label: qsTr("Anti-flicker"); enabledCtl: page.isAdmin
+                    values: page.rng("GetIsp", "Isp", "antiFlicker").length ? page.rng("GetIsp", "Isp", "antiFlicker") : ["Off"]
+                    value: isp.antiFlicker || ""
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": { "channel": page.ch(), "antiFlicker": v } })
+                }
+                ChoiceRow {
+                    id: backlightRow
+                    readonly property var isp: page.val("GetIsp", "Isp") || ({})
+                    visible: isp.backLight !== undefined
+                    label: qsTr("Backlight"); enabledCtl: page.isAdmin
+                    values: page.rng("GetIsp", "Isp", "backLight").length ? page.rng("GetIsp", "Isp", "backLight") : ["Off"]
+                    value: isp.backLight || ""
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": { "channel": page.ch(), "backLight": v } })
+                }
+                SliderRow {
+                    // BLC and DRC each have their own strength.
+                    readonly property string key: backlightRow.value === "BackLightControl" ? "blc" : "drc"
+                    visible: backlightRow.visible && backlightRow.value !== "Off" && backlightRow.isp[key] !== undefined
+                    label: qsTr("Backlight strength"); enabledCtl: page.isAdmin
+                    from: page.rng("GetIsp", "Isp", key).min || 0
+                    to: page.rng("GetIsp", "Isp", key).max || 255
+                    value: backlightRow.isp[key] || 128
+                    onCommit: (v) => {
+                        var isp = { "channel": page.ch() };
+                        isp[key] = v;
+                        Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": isp });
+                    }
+                }
+                ChoiceRow {
+                    id: wbRow
+                    readonly property var isp: page.val("GetIsp", "Isp") || ({})
+                    visible: isp.whiteBalance !== undefined
+                    label: qsTr("White balance"); enabledCtl: page.isAdmin
+                    values: page.rng("GetIsp", "Isp", "whiteBalance").length ? page.rng("GetIsp", "Isp", "whiteBalance") : ["Auto"]
+                    value: isp.whiteBalance || ""
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": { "channel": page.ch(), "whiteBalance": v } })
+                }
+                SliderRow {
+                    visible: wbRow.visible && wbRow.value === "Manual" && wbRow.isp.redGain !== undefined
+                    label: qsTr("Red gain"); enabledCtl: page.isAdmin
+                    from: page.rng("GetIsp", "Isp", "redGain").min || 0
+                    to: page.rng("GetIsp", "Isp", "redGain").max || 255
+                    value: wbRow.isp.redGain || 128
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": { "channel": page.ch(), "redGain": v } })
+                }
+                SliderRow {
+                    visible: wbRow.visible && wbRow.value === "Manual" && wbRow.isp.blueGain !== undefined
+                    label: qsTr("Blue gain"); enabledCtl: page.isAdmin
+                    from: page.rng("GetIsp", "Isp", "blueGain").min || 0
+                    to: page.rng("GetIsp", "Isp", "blueGain").max || 255
+                    value: wbRow.isp.blueGain || 128
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": { "channel": page.ch(), "blueGain": v } })
+                }
+                SwitchRow {
+                    readonly property var isp: page.val("GetIsp", "Isp") || ({})
+                    visible: isp.nr3d !== undefined
+                    label: qsTr("3D noise reduction"); enabledCtl: page.isAdmin
+                    checked: isp.nr3d === 1
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIsp", { "Isp": { "channel": page.ch(), "nr3d": v ? 1 : 0 } })
+                }
+                ChoiceRow {
+                    visible: page.has("GetIrLights")
+                    label: qsTr("Infrared lights"); enabledCtl: page.isAdmin
+                    values: page.rng("GetIrLights", "IrLights", "state").length ? page.rng("GetIrLights", "IrLights", "state") : ["Auto", "Off"]
+                    value: page.val("GetIrLights", "IrLights", "state") || ""
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetIrLights", { "IrLights": { "channel": page.ch(), "state": v } })
+                }
+                ChoiceRow {
+                    visible: page.has("GetPowerLed")
+                    label: qsTr("Status LED"); enabledCtl: page.isAdmin
+                    values: page.rng("GetPowerLed", "PowerLed", "state").length ? page.rng("GetPowerLed", "PowerLed", "state") : ["On", "Off"]
+                    value: page.val("GetPowerLed", "PowerLed", "state") || ""
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetPowerLed", { "PowerLed": { "channel": page.ch(), "state": v } })
+                }
+                Item { height: Theme.spacing }
+            }
             }
         }
     }
@@ -565,6 +818,132 @@ Item {
     }
 
     // ---- Encoding panel ----
+    // ---- Lights & siren panel (HTTP GetWhiteLed / GetAudioAlarmV20 / GetAudioCfg) ----
+    Component {
+        id: lightsPanel
+        ScrollView {
+            contentWidth: availableWidth
+            clip: true
+            ColumnLayout {
+                id: lights
+                width: parent.width
+                spacing: Theme.spacing
+                readonly property var wl: page.val("GetWhiteLed", "WhiteLed") || ({})
+                readonly property var sched: wl.LightingSchedule || ({})
+                readonly property var aiTypes: wl.wlAiDetectType || ({})
+                // SetWhiteLed wants channel/state/mode/bright together (reolink_aio).
+                function writeLed(changes) {
+                    var w = { "channel": page.ch(), "state": lights.wl.state || 0,
+                              "mode": lights.wl.mode || 0, "bright": lights.wl.bright || 0 };
+                    for (var k in changes) w[k] = changes[k];
+                    Devices.applySetting(page.deviceRow, "SetWhiteLed", { "WhiteLed": w });
+                }
+
+                Text {
+                    text: page.fetched && !page.has("GetWhiteLed") && !page.has("GetAudioAlarmV20") && !page.has("GetAudioCfg")
+                          ? qsTr("This camera reports no floodlight, siren or speaker settings.") : ""
+                    visible: text.length > 0
+                    color: Theme.textMuted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                }
+
+                // ---- Floodlight ----
+                Text { visible: page.has("GetWhiteLed"); text: qsTr("Floodlight")
+                       color: Theme.text; font.pixelSize: 14; font.bold: true }
+                ChoiceRow {
+                    visible: page.has("GetWhiteLed")
+                    label: qsTr("Night mode"); enabledCtl: page.isAdmin
+                    // reolink_aio SpotlightModeEnum: 0 off, 1 auto (on detection
+                    // at night), 3 on a schedule.
+                    values: ["0", "1", "3"]
+                    value: String(lights.wl.mode !== undefined ? lights.wl.mode : 0)
+                    onCommit: (v) => lights.writeLed({ "mode": parseInt(v) })
+                }
+                SliderRow {
+                    visible: page.has("GetWhiteLed")
+                    label: qsTr("Brightness"); enabledCtl: page.isAdmin
+                    from: page.rng("GetWhiteLed", "WhiteLed", "bright").min || 0
+                    to: page.rng("GetWhiteLed", "WhiteLed", "bright").max || 100
+                    value: lights.wl.bright || 0
+                    onCommit: (v) => lights.writeLed({ "bright": v })
+                }
+                RowLayout {
+                    visible: page.has("GetWhiteLed") && lights.wl.mode === 3
+                    spacing: Theme.spacing
+                    Text { text: qsTr("On from"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 150 }
+                    component HourSpin: ThemedSpinBox {
+                        from: 0; to: 23; implicitWidth: 80; enabled: page.isAdmin
+                        textFromValue: function (v) { return (v < 10 ? "0" : "") + v + ":00"; }
+                        valueFromText: function (t) { return parseInt(t); }
+                    }
+                    HourSpin {
+                        value: lights.sched.StartHour || 0
+                        onValueModified: lights.writeLed({ "LightingSchedule": { "StartHour": value, "StartMin": 0,
+                            "EndHour": lights.sched.EndHour || 0, "EndMin": 0 } })
+                    }
+                    Text { text: qsTr("to"); color: Theme.textMuted; font.pixelSize: 12 }
+                    HourSpin {
+                        value: lights.sched.EndHour || 0
+                        onValueModified: lights.writeLed({ "LightingSchedule": { "StartHour": lights.sched.StartHour || 0,
+                            "StartMin": 0, "EndHour": value, "EndMin": 0 } })
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                RowLayout {
+                    visible: page.has("GetWhiteLed") && lights.wl.mode === 1 && lights.wl.wlAiDetectType !== undefined
+                    spacing: Theme.spacing
+                    Text { text: qsTr("Turn on for"); color: Theme.textMuted; font.pixelSize: 12; Layout.preferredWidth: 150 }
+                    Repeater {
+                        model: [{ key: "people", label: qsTr("People") }, { key: "vehicle", label: qsTr("Vehicles") },
+                                { key: "dog_cat", label: qsTr("Animals") }]
+                        delegate: ThemedCheckBox {
+                            required property var modelData
+                            visible: lights.aiTypes[modelData.key] !== undefined
+                            enabled: page.isAdmin
+                            text: modelData.label
+                            checked: lights.aiTypes[modelData.key] === 1
+                            onToggled: {
+                                var t = Object.assign({}, lights.aiTypes);
+                                t[modelData.key] = checked ? 1 : 0;
+                                lights.writeLed({ "wlAiDetectType": t });
+                            }
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+
+                // ---- Siren ----
+                Text { visible: page.has("GetAudioAlarmV20"); text: qsTr("Siren")
+                       color: Theme.text; font.pixelSize: 14; font.bold: true; Layout.topMargin: Theme.spacing }
+                SwitchRow {
+                    visible: page.has("GetAudioAlarmV20")
+                    label: qsTr("Sound the siren on alarm"); enabledCtl: page.isAdmin
+                    checked: page.val("GetAudioAlarmV20", "Audio", "enable") === 1
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetAudioAlarmV20",
+                        { "Audio": { "enable": v ? 1 : 0, "schedule": { "channel": page.ch() } } })
+                }
+                Text {
+                    visible: page.has("GetAudioAlarmV20")
+                    text: qsTr("Test it from Live View with the siren button.")
+                    color: Theme.textMuted; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                }
+
+                // ---- Speaker ----
+                Text { visible: page.has("GetAudioCfg"); text: qsTr("Speaker")
+                       color: Theme.text; font.pixelSize: 14; font.bold: true; Layout.topMargin: Theme.spacing }
+                SliderRow {
+                    visible: page.has("GetAudioCfg")
+                    label: qsTr("Volume"); enabledCtl: page.isAdmin
+                    from: page.rng("GetAudioCfg", "AudioCfg", "volume").min || 0
+                    to: page.rng("GetAudioCfg", "AudioCfg", "volume").max || 100
+                    value: page.val("GetAudioCfg", "AudioCfg", "volume") || 0
+                    onCommit: (v) => Devices.applySetting(page.deviceRow, "SetAudioCfg",
+                        { "AudioCfg": { "channel": page.ch(), "volume": v } })
+                }
+                Item { height: Theme.spacing }
+            }
+        }
+    }
+
     Component {
         id: encodingPanel
         ColumnLayout {
@@ -640,6 +1019,33 @@ Item {
                         { "Osd": { "channel": Devices.channelOf(page.deviceRow), "osdChannel": { "name": text } } })
                 }
             }
+            // ---- Privacy masks (GetMask / SetMask) ----
+            Rectangle { visible: page.has("GetMask"); Layout.fillWidth: true; height: 1; color: Theme.border }
+            SettingRow {
+                visible: page.has("GetMask")
+                label: qsTr("Privacy masks")
+                hint: {
+                    var a = page.val("GetMask", "Mask", "area");
+                    var n = a ? a.length : 0;
+                    return n === 0 ? qsTr("No area drawn yet") : qsTr("%n area(s) covered", "", n);
+                }
+                Switch {
+                    checked: page.val("GetMask", "Mask", "enable") === 1
+                    enabled: page.isAdmin
+                    onToggled: Devices.applySetting(page.deviceRow, "SetMask",
+                        { "Mask": { "channel": page.ch(), "enable": checked ? 1 : 0 } })
+                }
+                Rectangle {
+                    implicitWidth: maskTxt.implicitWidth + 20; implicitHeight: 28; radius: 4
+                    color: maskHover.hovered && page.isAdmin ? Theme.accentDim : Theme.surfaceAlt
+                    border.color: Theme.border
+                    opacity: page.isAdmin ? 1 : 0.5
+                    Text { id: maskTxt; anchors.centerIn: parent; text: qsTr("Edit areas…"); color: Theme.text; font.pixelSize: 12 }
+                    HoverHandler { id: maskHover }
+                    TapHandler { enabled: page.isAdmin
+                                 onTapped: maskDialog.openFor(page.deviceRow, page.val("GetMask", "Mask"), page.rng("GetMask", "Mask")) }
+                }
+            }
             Item { Layout.fillHeight: true }
             Text {
                 text: qsTr("Brightness, contrast, day/night and IR settings load from GetImage/GetIsp.")
@@ -663,6 +1069,42 @@ Item {
                 Text { text: page.val("GetDevInfo","DevInfo","hardVer") || "—"; color: Theme.textMuted; font.pixelSize: 12 } }
             SettingRow { label: qsTr("Channels")
                 Text { text: String(page.val("GetDevInfo","DevInfo","channelNum") || "—"); color: Theme.textMuted; font.pixelSize: 12 } }
+
+            // ---- Firmware ----
+            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
+            Text { text: qsTr("Firmware update"); color: Theme.text; font.pixelSize: 14; font.bold: true }
+            SettingRow {
+                visible: page.has("GetAutoUpgrade")
+                label: qsTr("Install updates automatically")
+                Switch {
+                    checked: page.val("GetAutoUpgrade", "AutoUpgrade", "enable") === 1
+                    enabled: page.isAdmin
+                    onToggled: Devices.applySetting(page.deviceRow, "SetAutoUpgrade",
+                        { "AutoUpgrade": { "enable": checked ? 1 : 0 } })
+                }
+            }
+            SettingRow {
+                label: qsTr("Online check")
+                hint: page.fwText
+                Rectangle {
+                    implicitWidth: fwTxt.implicitWidth + 20; implicitHeight: 28; radius: 4
+                    color: fwHover.hovered ? Theme.accentDim : Theme.surfaceAlt
+                    border.color: Theme.border
+                    Text { id: fwTxt; anchors.centerIn: parent; text: qsTr("Check now"); color: Theme.text; font.pixelSize: 12 }
+                    HoverHandler { id: fwHover }
+                    TapHandler { onTapped: page.checkFirmware() }
+                }
+                Rectangle {
+                    visible: page.fwNew && !page.fwUpgrading
+                    implicitWidth: fwInstallTxt.implicitWidth + 20; implicitHeight: 28; radius: 4
+                    color: fwInstallHover.hovered && page.isAdmin ? Theme.danger : Theme.surfaceAlt
+                    border.color: Theme.danger
+                    opacity: page.isAdmin ? 1 : 0.5
+                    Text { id: fwInstallTxt; anchors.centerIn: parent; text: qsTr("Install update…"); color: Theme.text; font.pixelSize: 12 }
+                    HoverHandler { id: fwInstallHover }
+                    TapHandler { enabled: page.isAdmin; onTapped: page.confirmFirmware() }
+                }
+            }
             Item { Layout.fillHeight: true }
             Rectangle {
                 implicitWidth: rebootText.implicitWidth + 24
