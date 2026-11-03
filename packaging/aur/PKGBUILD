@@ -1,7 +1,7 @@
 # Maintainer: tlamoureux24
 # Contributor: TodesengelX
 pkgname=reolink-native-linux
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Native Linux desktop client for Reolink cameras and NVRs (Qt6, no Wine/Electron)"
 arch=('x86_64')

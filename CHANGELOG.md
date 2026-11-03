@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the project is pre-1.0, minor versions may still change behaviour.
 
+## [1.1.0] — 2026-11-03
+
+### Added
+
+- **Back home, back on the local network.** A device reached remotely by its
+  UID now checks its local address every 30 seconds and, as soon as it
+  answers there, reopens its session on the local network — except during a
+  recorded playback or a talk, which would be cut.
+- **Encoding format** (H.264 / H.265) in Device Settings › Encoding, on
+  cameras that let you change it — the same ones the official client offers
+  it for.
+- **Stop** for PTZ patrols. The cameras don't report a running patrol, so
+  Start and Stop are both always offered, as in the official client.
+
+### Fixed
+
+- The Properties sheet shows the main stream's real codec, read from the
+  stream itself: the RLC-811A's 4K stream announces H.264 while sending H.265.
+- Device Settings › Storage shows "SD card" instead of a generic disk.
+
 ## [1.0.0] — 2026-11-03
 
 First release of this fork. The app now works the way the official Reolink
@@ -226,6 +246,7 @@ session per device, whether the device is on your network or far away.
 Initial development release: live view, playback, events and device settings,
 published as an AppImage and a Flatpak bundle.
 
+[1.1.0]: https://github.com/tlamoureux24/reolink-native-linux/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tlamoureux24/reolink-native-linux/releases/tag/v1.0.0
 [0.1.8]: https://github.com/TodesengelX/reolink-native-linux/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/TodesengelX/reolink-native-linux/compare/v0.1.6...v0.1.7

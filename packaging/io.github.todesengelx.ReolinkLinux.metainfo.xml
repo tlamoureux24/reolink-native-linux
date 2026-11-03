@@ -27,6 +27,9 @@
     <category>Video</category>
   </categories>
   <releases>
+    <release version="1.1.0" date="2026-11-03">
+      <description><p>Sessions opened remotely by UID switch back to the local network by themselves when the device answers there again. Shows the main stream's real codec and the SD card, offers the encoding format on cameras that can change it, and adds a Stop button to PTZ patrols.</p></description>
+    </release>
     <release version="1.0.0" date="2026-11-03">
       <description><p>Everything now goes over Reolink's native Baichuan protocol, one session per device, as the official client does: live view, playback, clip export, detections, two-way talk, PTZ and settings, with no HTTP or RTSP left. Devices out of reach on the network are found by their UID through Reolink's P2P service. Also adds a light theme.</p></description>
     </release>
