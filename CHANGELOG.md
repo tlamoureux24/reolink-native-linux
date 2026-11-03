@@ -6,6 +6,62 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the project is pre-1.0, minor versions may still change behaviour.
 
+## [1.0.0] — 2026-11-03
+
+First release of this fork. The app now works the way the official Reolink
+client does: **everything goes over Reolink's native Baichuan protocol**, one
+session per device, whether the device is on your network or far away.
+
+### Changed
+
+- **One protocol for everything.** Sign-in, live view, playback, clip export,
+  snapshots, detections, two-way talk, PTZ and every device setting now run
+  inside each device's Baichuan session. The HTTP API, RTSP and HTTP-FLV are
+  gone, and so is the libcurl dependency. Start-up and switching cameras are
+  noticeably faster, and live, playback and settings no longer depend on the
+  device's web server.
+- **Detections are pushed** by each device on its session instead of polled.
+- **Adding a device** asks only for its address, user and password: no port or
+  HTTPS fields any more.
+- **Updates** are now checked against this fork's releases.
+
+### Added
+
+- **Remote access by UID.** When a device's address can't be reached, the app
+  finds it through Reolink's P2P service (direct, mapped port or relay) and
+  carries on in the same session; a camera whose network drops comes back by
+  UID within seconds. The sidebar shows such devices as "online · remote", and
+  the Properties sheet shows each device's UID.
+- **Light theme**, chosen in the client settings (Appearance), or following
+  the desktop's preference.
+- **Two-way talk** from the live view, with microphone gain and an option to
+  mute the camera while you talk.
+- **PTZ panel**: speed, zoom and focus, autofocus, presets, patrols, guard
+  point and AI auto-tracking, each shown only when the camera supports it.
+- **Playback**: pause, next frame, speeds from 0.5× to 8×, detection types on
+  the timeline with a People / Vehicles / Animals / Motion filter, clip export
+  on standalone cameras, and sound.
+- **Device settings**: advanced image (exposure, anti-flicker, backlight,
+  white balance, noise reduction, infrared and status lights), a Lights &
+  siren category (floodlight, siren, speaker volume), privacy masks drawn on a
+  snapshot, and firmware check, automatic updates and online install.
+- **Client settings** (top-right gear): language, start on login and tray,
+  notifications, hardware decoding, snapshot folder, live-view tour, update
+  check.
+- **French translation** of the whole interface.
+- **Live-view tour**: each camera shown maximized in turn.
+
+### Fixed
+
+- Single-camera view had no sound on Baichuan streams.
+- Switching SD/HD during playback did nothing until the video was stopped.
+- Closing the window left the app running behind its tray icon when "keep
+  running in the tray" was off; the live grid size is now remembered.
+- Device Settings stayed read-only when opened before the device had signed
+  in.
+- Several dialogs (Properties, confirmations, schedules, masks, detection
+  zones, users) showed a light title or button bar in the dark theme.
+
 ## [0.1.8] — 2026-08-12
 
 ### Fixed
@@ -170,6 +226,7 @@ While the project is pre-1.0, minor versions may still change behaviour.
 Initial development release: live view, playback, events and device settings,
 published as an AppImage and a Flatpak bundle.
 
+[1.0.0]: https://github.com/tlamoureux24/reolink-native-linux/releases/tag/v1.0.0
 [0.1.8]: https://github.com/TodesengelX/reolink-native-linux/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/TodesengelX/reolink-native-linux/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/TodesengelX/reolink-native-linux/compare/v0.1.5...v0.1.6

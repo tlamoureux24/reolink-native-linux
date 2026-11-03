@@ -18,7 +18,7 @@
 namespace rl {
 
 // The published repo. Releases are tagged vX.Y.Z with an x86_64 .AppImage asset.
-static constexpr auto kRepo = "TodesengelX/reolink-native-linux";
+static constexpr auto kRepo = "tlamoureux24/reolink-native-linux";
 static constexpr qint64 kMinAppImageBytes = 1'000'000; // sanity floor for a good download
 
 static QList<int> versionParts(QString v)

@@ -16,8 +16,8 @@
     <p>Not affiliated with or endorsed by Reolink.</p>
   </description>
   <launchable type="desktop-id">io.github.todesengelx.ReolinkLinux.desktop</launchable>
-  <url type="homepage">https://github.com/TodesengelX/reolink-client-linux</url>
-  <url type="bugtracker">https://github.com/TodesengelX/reolink-client-linux/issues</url>
+  <url type="homepage">https://github.com/tlamoureux24/reolink-native-linux</url>
+  <url type="bugtracker">https://github.com/tlamoureux24/reolink-native-linux/issues</url>
   <developer id="io.github.todesengelx">
     <name>reolink-client-linux contributors</name>
   </developer>
@@ -27,6 +27,9 @@
     <category>Video</category>
   </categories>
   <releases>
+    <release version="1.0.0" date="2026-11-03">
+      <description><p>Everything now goes over Reolink's native Baichuan protocol, one session per device, as the official client does: live view, playback, clip export, detections, two-way talk, PTZ and settings, with no HTTP or RTSP left. Devices out of reach on the network are found by their UID through Reolink's P2P service. Also adds a light theme.</p></description>
+    </release>
     <release version="0.1.8" date="2026-08-12">
       <description><p>Fixes playback failing with a retrying black screen on systems with FFmpeg 8 or newer, playback stopping at every event marker, and a device re-add leaving its header stuck on "connecting". Event playback now starts five seconds before the moment.</p></description>
     </release>
