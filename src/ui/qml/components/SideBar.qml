@@ -264,7 +264,8 @@ Rectangle {
                 readonly property bool hidden: underNvr && root.collapsed[hostId] === true
 
                 width: ListView.view.width
-                height: hidden ? 0 : 48
+                // Grows when the status needs a second line.
+                height: hidden ? 0 : Math.max(48, camInfo.implicitHeight + 8)
                 visible: !hidden
                 clip: true
                 color: delegateArea.containsMouse ? Theme.surfaceAlt : "transparent"
@@ -296,6 +297,7 @@ Rectangle {
                         Layout.alignment: Qt.AlignVCenter
                     }
                     ColumnLayout {
+                        id: camInfo
                         Layout.fillWidth: true
                         spacing: 2
                         Text {
@@ -305,22 +307,33 @@ Rectangle {
                             font.pixelSize: 13
                             elide: Text.ElideRight
                         }
-                        Row {
+                        RowLayout {
+                            Layout.fillWidth: true
                             spacing: 5
                             Rectangle {
+                                Layout.alignment: Qt.AlignTop
+                                Layout.topMargin: 4
                                 width: 7; height: 7; radius: 3.5
-                                anchors.verticalCenter: parent.verticalCenter
                                 color: online ? Theme.online
                                      : camRow.inTrouble ? Theme.danger : Theme.textMuted
                             }
+                            // Up to two lines, then the full text in a tooltip:
+                            // a status like "online (remote, relay)" or an
+                            // error must not be cut off unreadably.
                             Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Math.min(implicitWidth, camRow.width - 80)
+                                id: statusText
+                                Layout.fillWidth: true
                                 text: camRow.underNvr ? status
                                     : (model.length > 0 ? model + " · " + status : status)
                                 color: camRow.inTrouble ? Theme.danger : Theme.textMuted
                                 font.pixelSize: 11
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
                                 elide: Text.ElideRight
+                                ToolTip.visible: statusHover.hovered && statusText.truncated
+                                ToolTip.text: statusText.text
+                                ToolTip.delay: 400
+                                HoverHandler { id: statusHover }
                             }
                         }
                     }

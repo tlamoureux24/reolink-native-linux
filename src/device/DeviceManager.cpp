@@ -101,7 +101,7 @@ void DeviceManager::applyChannelStates(qint64 hostId, const QHash<int, bool> &ch
                 continue;
             if (e.online != it.value()) {
                 e.online = it.value();
-                e.status = it.value() ? tr("online") : tr("offline");
+                e.status = !it.value() ? tr("offline") : e.remote ? tr("online · remote") : tr("online");
                 emit dataChanged(index(i), index(i));
                 emit connectivityChanged(hostId, e.channel, e.chanName, it.value());
             }
@@ -570,9 +570,11 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         m_sessions.insert(hostId, hs);
     const bool recovered = m_lostHosts.remove(hostId);
 
-    // Update the host record (name/model/kind), persist once.
+    // Update the host record (name/model/kind/UID), persist once.
     if (!v.hostName.isEmpty())
         rec.name = v.hostName;
+    if (!v.hostUid.isEmpty())
+        rec.uid = v.hostUid; // reaches the device by UID when away from it
     rec.model = v.model;
     if (v.channelNum > 1)
         rec.kind = QStringLiteral("nvr");
@@ -587,12 +589,13 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         e.channel = ch.channel;
         e.chanName = ch.name.isEmpty() ? rec.name : ch.name;
         e.online = ch.online;
-        e.status = ch.online ? tr("online") : tr("offline");
+        e.status = !ch.online ? tr("offline") : v.status;
         e.mainCodec = ch.codec; // may be empty = unknown -> probe
         e.mainSize = ch.mainSize;
         e.subSize = ch.subSize;
         e.uid = ch.uid;
         e.hostUid = v.hostUid;
+        e.remote = !v.linkMode.isEmpty() && v.linkMode != QLatin1String("tcp");
         e.caps = ch.caps;
         e.talk = ch.caps.talk;
         e.isAdmin = v.isAdmin;
@@ -694,13 +697,15 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
 
         // The device's session, as the official client opens it (BCSDK_Open):
         // log in over Baichuan, then read what it is and can do.
+        // Its address first; away from it, by its UID (P2P) once known.
         BcSession::Params sp;
-        sp.target = {rec.addr, 9000, QString(), false};
+        sp.target = {rec.addr, 9000, rec.uid, false};
         sp.username = rec.username;
         sp.password = password;
         const std::shared_ptr<BcSession> session = BcSession::acquire(sp);
         bcdev::Device d;
-        const bool ok = session->waitReady(15000) && bcdev::readDevice(*session, rec.username, &d);
+        const bool ok = session->waitReady(rec.uid.isEmpty() ? 15000 : 40000)
+                        && bcdev::readDevice(*session, rec.username, &d);
 
         Validation v;
         v.password = password;
@@ -719,7 +724,8 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
             return;
         }
         v.online = true;
-        v.status = tr("online");
+        v.linkMode = session->linkMode();
+        v.status = v.linkMode == QLatin1String("tcp") ? tr("online") : tr("online · remote");
         v.problem = Problem::None;
         v.session = session;
         v.hostName = d.name;
@@ -847,7 +853,7 @@ void DeviceManager::retranslateStatuses()
         if (e.problem != Problem::None)
             continue;
         if (e.primed)
-            e.status = e.online ? tr("online") : tr("offline");
+            e.status = !e.online ? tr("offline") : e.remote ? tr("online · remote") : tr("online");
         else
             e.status = e.online ? tr("ready") : tr("connecting…");
         emit dataChanged(index(i), index(i));
@@ -1112,6 +1118,7 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     p.username = e.rec.username;
     p.password = e.password;
     p.channel = e.channel;
+    p.linkUid = e.rec.uid; // the device's session: its address, else its UID
     p.uid = e.uid.isEmpty() ? e.hostUid : e.uid;
     p.mainStream = mainStream;
     p.startEpoch = startEpoch; // <= 0 = live (cmd 3 Preview), else recorded playback

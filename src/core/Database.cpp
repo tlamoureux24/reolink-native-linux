@@ -100,10 +100,18 @@ bool Database::migrate()
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC)"),
     };
 
+    // Remote access by UID: the device UID, and what the last full validation
+    // learned (names, codecs, capabilities) for when only Baichuan is reachable.
+    static const QStringList migrationsV3 = {
+        QStringLiteral("ALTER TABLE hosts ADD COLUMN uid TEXT NOT NULL DEFAULT ''"),
+        QStringLiteral("ALTER TABLE hosts ADD COLUMN cache TEXT NOT NULL DEFAULT ''"),
+    };
+
     // Ordered migrations; each bumps the stored version by one.
     const QVector<QPair<int, const QStringList *>> steps = {
         {1, &migrationsV1},
         {2, &migrationsV2},
+        {3, &migrationsV3},
     };
 
     const int current = schemaVersion();
@@ -222,15 +230,17 @@ qint64 Database::addHost(const HostRecord &rec)
 {
     QSqlQuery q(db());
     q.prepare(QStringLiteral(
-        "INSERT INTO hosts (kind, name, addr, port, https, username, model)"
-        " VALUES (:kind, :name, :addr, :port, :https, :username, :model)"));
+        "INSERT INTO hosts (kind, name, addr, port, https, username, model, uid, cache)"
+        " VALUES (:kind, :name, :addr, :port, :https, :username, :model, :uid, :cache)"));
     q.bindValue(QStringLiteral(":kind"), rec.kind);
     q.bindValue(QStringLiteral(":name"), sqlText(rec.name));
-    q.bindValue(QStringLiteral(":addr"), rec.addr);
+    q.bindValue(QStringLiteral(":addr"), sqlText(rec.addr));
     q.bindValue(QStringLiteral(":port"), rec.port);
     q.bindValue(QStringLiteral(":https"), rec.https ? 1 : 0);
     q.bindValue(QStringLiteral(":username"), sqlText(rec.username));
     q.bindValue(QStringLiteral(":model"), sqlText(rec.model));
+    q.bindValue(QStringLiteral(":uid"), sqlText(rec.uid));
+    q.bindValue(QStringLiteral(":cache"), sqlText(rec.cache));
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         return -1;
@@ -255,14 +265,16 @@ bool Database::updateHost(const HostRecord &rec)
     QSqlQuery q(db());
     q.prepare(QStringLiteral(
         "UPDATE hosts SET kind=:kind, name=:name, addr=:addr, port=:port, https=:https,"
-        " username=:username, model=:model WHERE id=:id"));
+        " username=:username, model=:model, uid=:uid, cache=:cache WHERE id=:id"));
     q.bindValue(QStringLiteral(":kind"), rec.kind);
     q.bindValue(QStringLiteral(":name"), sqlText(rec.name));
-    q.bindValue(QStringLiteral(":addr"), rec.addr);
+    q.bindValue(QStringLiteral(":addr"), sqlText(rec.addr));
     q.bindValue(QStringLiteral(":port"), rec.port);
     q.bindValue(QStringLiteral(":https"), rec.https ? 1 : 0);
     q.bindValue(QStringLiteral(":username"), sqlText(rec.username));
     q.bindValue(QStringLiteral(":model"), sqlText(rec.model));
+    q.bindValue(QStringLiteral(":uid"), sqlText(rec.uid));
+    q.bindValue(QStringLiteral(":cache"), sqlText(rec.cache));
     q.bindValue(QStringLiteral(":id"), rec.id);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
@@ -276,7 +288,8 @@ QVector<HostRecord> Database::hosts() const
     QVector<HostRecord> out;
     QSqlQuery q(db());
     if (!q.exec(QStringLiteral(
-            "SELECT id, kind, name, addr, port, https, username, model FROM hosts ORDER BY id")))
+            "SELECT id, kind, name, addr, port, https, username, model, uid, cache"
+            " FROM hosts ORDER BY id")))
         return out;
     while (q.next()) {
         HostRecord r;
@@ -288,6 +301,8 @@ QVector<HostRecord> Database::hosts() const
         r.https = q.value(5).toInt() != 0;
         r.username = q.value(6).toString();
         r.model = q.value(7).toString();
+        r.uid = q.value(8).toString();
+        r.cache = q.value(9).toString();
         out.append(r);
     }
     return out;

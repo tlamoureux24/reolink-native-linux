@@ -43,6 +43,7 @@ public:
         QString password;
         int channel = 0;
         QString uid;                    // camera UID (recordings are searched by it)
+        QString linkUid;                // the device's UID: reached by it when away
         bool mainStream = true;
         qint64 startEpoch = 0;          // 0 => live preview; else recorded playback from here
         // Recorded playback: the day's files of this stream, played one by one.

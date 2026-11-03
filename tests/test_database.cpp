@@ -10,7 +10,7 @@ class TestDatabase : public QObject
     Q_OBJECT
 
     // Current schema version; bump alongside new migrations in Database.cpp.
-    static constexpr int kSchemaVersion = 2;
+    static constexpr int kSchemaVersion = 3;
 
 private slots:
     void migratesToCurrent()
@@ -32,6 +32,28 @@ private slots:
         Database db2(path, QStringLiteral("test_idem_2"));
         QVERIFY(db2.open());
         QCOMPARE(db2.schemaVersion(), kSchemaVersion);
+    }
+
+    void hostKeepsUidAndCache()
+    {
+        QTemporaryDir dir;
+        Database db(dir.filePath("t.db"), QStringLiteral("test_hosts"));
+        QVERIFY(db.open());
+        HostRecord h;
+        h.kind = QStringLiteral("camera");
+        h.name = QStringLiteral("Garden");
+        h.addr = QStringLiteral("192.168.1.20");
+        h.uid = QStringLiteral("95270000ABCDEFGH");
+        h.id = db.addHost(h);
+        QVERIFY(h.id > 0);
+        QCOMPARE(db.hosts().first().uid, h.uid);
+        QCOMPARE(db.hosts().first().cache, QString());
+        h.cache = QStringLiteral("{\"model\":\"RLC-811A\"}");
+        h.addr.clear(); // added by UID only
+        QVERIFY(db.updateHost(h));
+        const HostRecord back = db.hosts().first();
+        QCOMPARE(back.cache, h.cache);
+        QCOMPARE(back.addr, QString());
     }
 
     void eventCrud()

@@ -43,8 +43,9 @@ struct BcTarget {
     bool viaUid = false;
 };
 
-// Open a link: TCP when !viaUid, otherwise a UDP connection by UID. Blocking
-// (up to ~5 s for TCP, ~20 s by UID); `abort` cancels it early.
+// Open a link: by UID only when viaUid; else TCP to the address, and when that
+// fails and a UID is known, by UID (P2P) — one device, whichever way reaches
+// it. Blocking (up to ~5 s for TCP, ~20 s by UID); `abort` cancels it early.
 std::unique_ptr<BcLink> openBcLink(const BcTarget &target, const std::atomic<bool> *abort = nullptr,
                                    QString *error = nullptr);
 

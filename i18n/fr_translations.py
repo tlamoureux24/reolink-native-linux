@@ -437,6 +437,9 @@ FR = {
     "no network path to the camera was found": "aucun chemin réseau vers la caméra n'a été trouvé",
     "cancelled": "annulé",
     "the camera closed the connection": "la caméra a fermé la connexion",
+    "online · remote": "en ligne · à distance",
+    "export failed": "échec de l'export",
+    "couldn't reach the device": "impossible de joindre l'appareil",
     "login rejected — check the user name and password":
         "connexion refusée — vérifiez le nom d'utilisateur et le mot de passe",
     "no answer on port 9000 — is it a Reolink camera or NVR?":

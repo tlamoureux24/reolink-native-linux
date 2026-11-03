@@ -187,6 +187,22 @@ With that, the app sends no HTTP request at all: the HTTP fallback of the
 settings and the per-device HTTP client are gone (bc-probe keeps one, to
 compare).
 
+**Step 7 — done, validated by the user (2026-11-03, relay forced from home).** Remote access is just
+another transport under the same session. A device's session tries its
+address first (TCP 9000, 3 s at most when a UID is known) and, failing that,
+its UID through Reolink's P2P servers (BcUdpLink: LAN, then map, then relay);
+the UID comes from cmd 114 at validation and is kept in the database (schema
+v3, the same columns as the earlier P2P build). Everything above the session
+— live, playback, events, PTZ, settings, talk — works unchanged; the sidebar
+says "online · remote". A lost session (connection closed, or 20 s of
+silence) is revalidated as before, so leaving the LAN switches to the UID by
+itself: with the address cut mid-run, the session was back by UID relay in
+under a second and the live view in three. Forced through the relay from
+home (`RL_FORCE_UID=1 RL_P2P_MODES=relay`), all six cameras connected (two
+after one retry: Reolink's servers answer parallel lookups unevenly), with
+live, alarms and playback. Not done: going back to the address when home
+again while a remote session still works (it stays remote until it drops).
+
 ## Risks
 
 - **NVR:** the user has none at the moment, so NVR paths are written from the

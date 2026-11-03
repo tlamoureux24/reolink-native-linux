@@ -145,7 +145,7 @@ private:
 std::unique_ptr<BcLink> openBcLink(const BcTarget &target, const std::atomic<bool> *abort,
                                    QString *error)
 {
-    if (target.viaUid) {
+    auto byUid = [&] {
         BcUdpLink::Options o;
         o.uid = target.uid;
         o.lanHost = target.host;
@@ -157,14 +157,24 @@ std::unique_ptr<BcLink> openBcLink(const BcTarget &target, const std::atomic<boo
             o.relay = modes.contains("relay");
         }
         return BcUdpLink::connect(o, abort, error);
+    };
+    if (target.viaUid)
+        return byUid();
+    // A device known by its address and its UID: its address on the LAN
+    // (TCP 9000) first; away from it, by UID through Reolink's P2P servers,
+    // as the official client reaches it. RL_FORCE_UID=1 skips the address
+    // (to try remote access from home).
+    const bool haveUid = !target.uid.isEmpty();
+    if (!haveUid || !qEnvironmentVariableIsSet("RL_FORCE_UID")) {
+        auto link = std::make_unique<BcTcpLink>(target);
+        if (link->connectTo(target, haveUid ? 3000 : 5000, abort))
+            return link;
     }
-    auto link = std::make_unique<BcTcpLink>(target);
-    if (!link->connectTo(target, 5000, abort)) {
-        if (error)
-            *error = QCoreApplication::translate("BcLink", "couldn't reach the device");
-        return nullptr;
-    }
-    return link;
+    if (haveUid && !(abort && *abort))
+        return byUid();
+    if (error)
+        *error = QCoreApplication::translate("BcLink", "couldn't reach the device");
+    return nullptr;
 }
 
 } // namespace rl

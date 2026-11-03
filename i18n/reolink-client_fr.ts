@@ -147,7 +147,7 @@
 <context>
     <name>BcLink</name>
     <message>
-        <location filename="../src/protocol/BcLink.cpp" line="+69" />
+        <location filename="../src/protocol/BcLink.cpp" line="+176" />
         <source>couldn't reach the device</source>
         <translation>impossible de joindre l'appareil</translation>
     </message>
@@ -1378,18 +1378,18 @@
 <context>
     <name>LivePane</name>
     <message>
-        <location filename="../src/ui/qml/components/LivePane.qml" line="+409" />
+        <location filename="../src/ui/qml/components/LivePane.qml" line="+410" />
         <source>No camera</source>
         <translation>Aucune caméra</translation>
     </message>
     <message>
         <location line="+2" />
-        <location line="+126" />
+        <location line="+125" />
         <source>Connecting…</source>
         <translation>Connexion…</translation>
     </message>
     <message>
-        <location line="-124" />
+        <location line="-123" />
         <source>Stopped</source>
         <translation>Arrêté</translation>
     </message>
@@ -1404,7 +1404,7 @@
         <translation>Passer en Clair (HD)</translation>
     </message>
     <message>
-        <location line="+10" />
+        <location line="+9" />
         <source>No sound on this stream</source>
         <translation>Pas de son sur ce flux</translation>
     </message>
@@ -1778,7 +1778,7 @@
 <context>
     <name>PlaybackPage</name>
     <message>
-        <location filename="../src/ui/qml/pages/PlaybackPage.qml" line="+158" />
+        <location filename="../src/ui/qml/pages/PlaybackPage.qml" line="+157" />
         <source>Camera %1</source>
         <translation>Caméra %1</translation>
     </message>
@@ -1788,13 +1788,13 @@
         <translation><numerusform>Lecture synchronisée — %n caméra</numerusform><numerusform>Lecture synchronisée — %n caméras</numerusform></translation>
     </message>
     <message>
-        <location line="+247" />
-        <location line="+592" />
+        <location line="+234" />
+        <location line="+595" />
         <source>HD</source>
         <translation>HD</translation>
     </message>
     <message>
-        <location line="-570" />
+        <location line="-571" />
         <source>Exporting clip…</source>
         <translation>Export du clip…</translation>
     </message>
@@ -1809,12 +1809,12 @@
         <translation>Échec de l'export : %1</translation>
     </message>
     <message>
-        <location line="+18" />
+        <location line="+24" />
         <source> recordings</source>
         <translation> enregistrements</translation>
     </message>
     <message>
-        <location line="+106" />
+        <location line="+101" />
         <source>Camera:</source>
         <translation>Caméra :</translation>
     </message>
@@ -1952,7 +1952,7 @@
 <context>
     <name>PlaybackPane</name>
     <message>
-        <location filename="../src/ui/qml/components/PlaybackPane.qml" line="+232" />
+        <location filename="../src/ui/qml/components/PlaybackPane.qml" line="+224" />
         <source>No camera</source>
         <translation>Aucune caméra</translation>
     </message>
@@ -1995,7 +1995,7 @@
 <context>
     <name>PoppedWindow</name>
     <message>
-        <location filename="../src/ui/qml/components/PoppedWindow.qml" line="+116" />
+        <location filename="../src/ui/qml/components/PoppedWindow.qml" line="+118" />
         <source>Connecting…</source>
         <translation>Connexion…</translation>
     </message>
@@ -2529,156 +2529,130 @@ Cliquez sur + pour en ajouter un.</translation>
 <context>
     <name>rl::DeviceManager</name>
     <message>
-        <location filename="../src/device/DeviceManager.cpp" line="+80" />
-        <location line="+459" />
-        <location line="+380" />
+        <location filename="../src/device/DeviceManager.cpp" line="+59" />
+        <location line="+381" />
+        <location line="+418" />
         <source>ready</source>
         <translation>prêt</translation>
     </message>
     <message>
-        <location line="-839" />
-        <location line="+363" />
+        <location line="-799" />
+        <location line="+285" />
         <location line="+26" />
         <location line="+29" />
-        <location line="+421" />
+        <location line="+459" />
         <source>connecting…</source>
         <translation>connexion…</translation>
     </message>
     <message>
-        <location line="-757" />
-        <location line="+605" />
+        <location line="-715" />
+        <location line="+576" />
         <source>unreachable</source>
         <translation>injoignable</translation>
     </message>
     <message>
-        <location line="-642" />
-        <location line="+538" />
-        <location line="+112" />
-        <location line="+142" />
+        <location line="-615" />
+        <location line="+624" />
+        <location line="+128" />
         <source>online</source>
         <translation>en ligne</translation>
     </message>
     <message>
-        <location line="-792" />
-        <location line="+538" />
-        <location line="+254" />
+        <location line="-752" />
+        <location line="+488" />
+        <location line="+264" />
         <source>offline</source>
         <translation>hors ligne</translation>
     </message>
     <message>
-        <location line="-504" />
+        <location line="-752" />
+        <location line="+624" />
+        <location line="+128" />
+        <source>online · remote</source>
+        <translation>en ligne · à distance</translation>
+    </message>
+    <message>
+        <location line="-542" />
         <source>the device did not answer like a Reolink camera or NVR</source>
         <translation>l'appareil n'a pas répondu comme une caméra ou un NVR Reolink</translation>
     </message>
     <message>
         <location line="+4" />
-        <location line="+347" />
+        <location line="+398" />
         <source>login rejected — check the user name and password</source>
         <translation>connexion refusée — vérifiez le nom d'utilisateur et le mot de passe</translation>
     </message>
     <message>
-        <location line="-344" />
+        <location line="-395" />
         <source>no answer on port 9000 — is it a Reolink camera or NVR?</source>
         <translation>pas de réponse sur le port 9000 — est-ce bien une caméra ou un NVR Reolink ?</translation>
     </message>
     <message>
-        <location line="+322" />
+        <location line="+371" />
         <source>keyring unavailable — password not saved</source>
         <translation>trousseau indisponible — mot de passe non enregistré</translation>
     </message>
     <message>
-        <location line="+133" />
+        <location line="+122" />
         <location line="+53" />
-        <location line="+21" />
-        <location line="+72" />
-        <location line="+149" />
-        <location line="+74" />
-        <location line="+175" />
+        <location line="+18" />
+        <location line="+82" />
+        <location line="+99" />
+        <location line="+129" />
         <location line="+3" />
-        <location line="+79" />
+        <location line="+55" />
         <location line="+131" />
         <source>device not ready</source>
         <translation>appareil pas prêt</translation>
     </message>
     <message>
-        <location line="-694" />
-        <location line="+574" />
-        <location line="+144" />
+        <location line="-510" />
         <source>failed</source>
         <translation>échec</translation>
     </message>
     <message>
-        <location line="-679" />
+        <location line="+40" />
         <source>snapshot failed</source>
         <translation>échec de la capture</translation>
     </message>
     <message>
-        <location line="+92" />
+        <location line="+73" />
         <source>search failed</source>
         <translation>échec de la recherche</translation>
     </message>
     <message>
-        <location line="+106" />
-        <source>no recordings on this device</source>
-        <translation>aucun enregistrement sur cet appareil</translation>
+        <location line="+113" />
+        <source>export failed</source>
+        <translation>échec de l'export</translation>
     </message>
     <message>
-        <location line="+34" />
-        <source>no clip available for this moment</source>
-        <translation>aucun clip disponible pour ce moment</translation>
-    </message>
-    <message>
-        <location line="+14" />
-        <source>clip download failed</source>
-        <translation>échec du téléchargement du clip</translation>
-    </message>
-    <message>
-        <location line="+3" />
-        <location line="+44" />
-        <location line="+63" />
-        <source>clip request failed</source>
-        <translation>échec de la demande de clip</translation>
-    </message>
-    <message>
-        <location line="-48" />
-        <location line="+45" />
-        <source>download failed</source>
-        <translation>échec du téléchargement</translation>
-    </message>
-    <message>
-        <location line="-42" />
-        <location line="+31" />
-        <source>no recording covers this moment</source>
-        <translation>aucun enregistrement à ce moment</translation>
-    </message>
-    <message>
-        <location line="+153" />
+        <location line="+124" />
         <source>settings fetch failed</source>
         <translation>échec de la lecture des réglages</translation>
     </message>
     <message>
         <location line="+33" />
         <location line="+131" />
-        <location line="+136" />
+        <location line="+130" />
+        <location line="+76" />
         <location line="+77" />
-        <location line="+78" />
         <source>requires an administrator account</source>
         <translation>nécessite un compte administrateur</translation>
     </message>
     <message>
-        <location line="-269" />
+        <location line="-265" />
         <source>floodlight not supported</source>
         <translation>projecteur non pris en charge</translation>
     </message>
     <message>
-        <location line="+135" />
-        <location line="+85" />
-        <location line="+69" />
+        <location line="+131" />
+        <location line="+87" />
+        <location line="+65" />
         <source>couldn't reach the device</source>
         <translation>impossible de joindre l'appareil</translation>
     </message>
     <message>
-        <location line="-75" />
+        <location line="-71" />
         <source>device rejected the schedule (status %1)</source>
         <translation>l'appareil a refusé le planning (statut %1)</translation>
     </message>

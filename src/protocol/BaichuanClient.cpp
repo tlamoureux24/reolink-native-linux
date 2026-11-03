@@ -203,7 +203,7 @@ void BaichuanClient::deliverSharedAudio(const BcMediaParser::AudioFrame &a)
 void BaichuanClient::runSessionLive()
 {
     BcSession::Params sp;
-    sp.target = {m_p.host, m_p.port, QString(), false};
+    sp.target = {m_p.host, m_p.port, m_p.linkUid, false};
     sp.username = m_p.username;
     sp.password = m_p.password;
     const std::shared_ptr<BcSession> s = BcSession::acquire(sp);
@@ -300,7 +300,7 @@ void BaichuanClient::runSessionReplay()
     if (files.isEmpty())
         return;
     BcSession::Params sp;
-    sp.target = {m_p.host, m_p.port, QString(), false};
+    sp.target = {m_p.host, m_p.port, m_p.linkUid, false};
     sp.username = m_p.username;
     sp.password = m_p.password;
     const std::shared_ptr<BcSession> s = BcSession::acquire(sp);

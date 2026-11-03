@@ -318,6 +318,7 @@ private:
         bool isAdmin = false;                       // logged-in user may edit settings
         api::BatteryInfo battery;                   // battery/solar state (if any)
         QString hostUid; // the host's UID (searches fall back to it)
+        bool remote = false; // its session reached it by UID (P2P), not its address
         // The last searched day's files, per stream (sub draws the timeline).
         QVector<BcReplayFile> filesSub;
         QVector<BcReplayFile> filesMain;
@@ -347,6 +348,7 @@ private:
         bool talk = false;
         QString password;
         QString hostUid;
+        QString linkMode; // how the session reached it: tcp, or lan/local/map/relay by UID
         api::BatteryInfo battery;
         std::shared_ptr<BcSession> session;
         QVector<ChannelResult> channels; // one per camera to show
