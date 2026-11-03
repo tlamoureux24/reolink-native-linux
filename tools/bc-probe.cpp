@@ -76,6 +76,9 @@ int main(int argc, char **argv)
                 "for this many seconds; report what arrives.", "s"},
         {"export", "With --search-day: export 15 s from the day's first 20-60 s file's start "
                    "(cmd 143) into this MP4, as the app does.", "file"},
+        {"bc-set", "Write this HTTP Set command through the app's translation, with "
+                   "--param as its JSON parameter (changes the device!).", "cmd"},
+        {"param", "JSON parameter for --bc-set.", "json"},
         {"compare", "Read the device over Baichuan and over HTTP (GetDevInfo, GetAbility, "
                     "GetEnc) and print both, field by field."},
     });
@@ -197,11 +200,19 @@ int main(int argc, char **argv)
                     b.results.isEmpty() ? qPrintable(b.error)
                                         : (b.results.first().ok ? b.results.first().value.dump().c_str()
                                                                 : qPrintable(b.results.first().detail)));
+        if (!b.results.isEmpty() && !b.results.first().range.empty())
+            std::printf("--- http %sRange: %s\n", qPrintable(c), b.results.first().range.dump().c_str());
+    }
+    if (cli.isSet("bc-set")) {
+        const Json j = Json::parse(cli.value("param").toStdString(), nullptr, false);
+        QString err;
+        const bool ok = bcset::set(*s, 0, cli.value("bc-set"), api::toVariant(j).toMap(), &err, sp.username);
+        std::printf("--- bc-set %s: %s %s\n", qPrintable(cli.value("bc-set")), ok ? "ok" : "FAILED", qPrintable(err));
     }
     for (const QString &c : cli.values("bc-get")) {
         QVariant value, range;
         QString err;
-        const bool ok = bcset::get(*s, 0, c, &value, &range, &err);
+        const bool ok = bcset::get(*s, 0, c, &value, &range, &err, sp.username);
         std::printf("--- bc %s: %s %s range %s\n", qPrintable(c), ok ? "" : qPrintable(err),
                     api::toJson(value.toMap()).dump().c_str(), api::toJson(range.toMap()).dump().c_str());
     }

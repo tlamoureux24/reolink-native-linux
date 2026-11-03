@@ -35,7 +35,6 @@ namespace rl {
 // registered metatype without its PointerToQObject flag.
 class BaichuanClient;
 class BcSession;
-class ReolinkHttpClient;
 }
 
 namespace rl {
@@ -293,7 +292,7 @@ private slots:
 private:
     // One model row = one camera. A standalone camera is a host with a single
     // channel (0); an NVR fans out into one Entry per online channel, all sharing
-    // the same host connection (hostId, addr, credentials, client).
+    // the same host session (hostId, addr, credentials, Baichuan session).
     // Why a host isn't online. Drives both the sidebar visuals and the retry
     // policy: Unreachable is auto-retried with backoff (device off, wrong IP,
     // network down — retrying is free); Auth/Locked are NEVER auto-retried,
@@ -322,8 +321,6 @@ private:
         // The last searched day's files, per stream (sub draws the timeline).
         QVector<BcReplayFile> filesSub;
         QVector<BcReplayFile> filesMain;
-        // Persistent authenticated client for the host, shared by its channels.
-        std::shared_ptr<ReolinkHttpClient> client;
     };
 
     // One camera's validated state (channel within a host).
@@ -351,7 +348,6 @@ private:
         QString password;
         QString hostUid;
         api::BatteryInfo battery;
-        std::shared_ptr<ReolinkHttpClient> client;
         std::shared_ptr<BcSession> session;
         QVector<ChannelResult> channels; // one per camera to show
     };
@@ -374,7 +370,6 @@ private:
     void startBaichuan(int row, qint64 startEpoch, rl::StreamPlayer *player, bool mainStream);
     void applyValidation(qint64 hostId, const Validation &v);
     void postValidation(qint64 hostId, const Validation &v); // marshals to GUI thread
-    std::shared_ptr<ReolinkHttpClient> clientFor(int row);
 
     Database *m_db;
     CredentialStore *m_credentials;

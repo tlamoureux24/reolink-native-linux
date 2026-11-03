@@ -12,7 +12,6 @@
 #include "protocol/BcRecordings.h"
 #include "protocol/BcSettings.h"
 #include "protocol/BcSession.h"
-#include "protocol/ReolinkHttpClient.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -601,7 +600,6 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         e.primed = true;
         e.problem = Problem::None;
         e.rotationOverride = loadRotation(rec.id, ch.channel);
-        e.client = v.client;
         if (ch.channel == 0)
             e.battery = v.battery;
         fresh.append(e);
@@ -724,9 +722,6 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
         v.status = tr("online");
         v.problem = Problem::None;
         v.session = session;
-        // Features not moved to Baichuan yet still use the HTTP API.
-        v.client = std::make_shared<ReolinkHttpClient>(rec.addr, rec.port, rec.https,
-                                                       rec.username, password);
         v.hostName = d.name;
         v.model = d.model;
         v.channelNum = d.channelNum;
@@ -760,19 +755,6 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
         }
         postValidation(hostId, v);
     }));
-}
-
-std::shared_ptr<ReolinkHttpClient> DeviceManager::clientFor(int row)
-{
-    if (row < 0 || row >= m_entries.size())
-        return {};
-    Entry &e = m_entries[row];
-    if (e.rec.kind == QLatin1String("stream") || !e.primed)
-        return {};
-    if (!e.client)
-        e.client = std::make_shared<ReolinkHttpClient>(e.rec.addr, e.rec.port, e.rec.https,
-                                                       e.rec.username, e.password);
-    return e.client;
 }
 
 // PTZ goes through the device's session (cmd 18 / 19), as the official client.
@@ -1198,11 +1180,10 @@ bool DeviceManager::seekBaichuanPlayback(int row, qint64 startEpoch)
 
 void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const QString &tag)
 {
-    // Commands moved to Baichuan go through the device's session (bcset); the
-    // others still use the HTTP API until their turn.
+    // Every command goes through the device's session, offered to the panels
+    // in the HTTP API's JSON shape they were written for (bcset).
     const auto session = sessionFor(row);
-    auto client = clientFor(row);
-    if (!session || !client || getCommands.isEmpty()) {
+    if (!session || getCommands.isEmpty()) {
         if (tag.isEmpty())
             emit settingsFailed(row, tr("device not ready"));
         else
@@ -1211,60 +1192,23 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const
         return;
     }
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([this, session, client, row, ch, getCommands, tag] {
+    const QString user = m_entries.at(row).rec.username;
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, user, getCommands, tag] {
         QVariantMap values;
         QStringList failed;
         QString lastError;
-        // Fetch one command, retrying only transient transport failures: NVRs (e.g.
-        // RLN8-410) intermittently return HTTP 502 when proxying a camera command
-        // under load. Retry a few times with a short backoff (the lighter action=0
-        // on the 2nd try); a DEFINITIVE device error (rspCode set — e.g. -9 "not
-        // supported") stops immediately so we don't hammer the NVR for nothing.
-        auto fetchOne = [&](const QString &cmd) {
-            api::CommandResult r;
-            for (int attempt = 0; attempt < 3; ++attempt) {
-                r = client->callOne(cmd, Json{{"channel", ch}}, attempt == 1 ? 0 : 1);
-                if (r.ok || r.rspCode != 0)
-                    break;
-                QThread::msleep(400);
-            }
-            return r;
-        };
-        // Newer firmware renamed several commands with a "V20" suffix (a different
-        // schedule shape). If the device says the legacy name isn't supported, try
-        // the V20 variant and store it under the legacy key so panels bind uniformly.
-        static const QHash<QString, QString> v20Alt = {
-            {QStringLiteral("GetPush"), QStringLiteral("GetPushV20")},
-            {QStringLiteral("GetEmail"), QStringLiteral("GetEmailV20")},
-            {QStringLiteral("GetFtp"), QStringLiteral("GetFtpV20")},
-            {QStringLiteral("GetRec"), QStringLiteral("GetRecV20")}};
         for (const QString &c : getCommands) {
-            if (bcset::handles(c)) {
-                QVariant value, range;
-                QString error;
-                if (bcset::get(*session, ch, c, &value, &range, &error)) {
-                    values.insert(c, value);
-                    if (range.isValid())
-                        values.insert(c + QStringLiteral("Range"), range);
-                } else {
-                    failed.append(c);
-                    lastError = error;
-                }
-                continue;
-            }
-            api::CommandResult r = fetchOne(c);
-            if (!r.ok && r.rspCode != 0 && v20Alt.contains(c))
-                r = fetchOne(v20Alt.value(c));
-            if (r.ok) {
-                values.insert(c, api::toVariant(r.value));
-                // Bounds differ per model (zoom 0..34 vs 0..41, focus 0..230 vs
-                // 0..1104 on two RLC-823A): expose them as "<Cmd>Range".
-                if (!r.range.empty())
-                    values.insert(c + QStringLiteral("Range"), api::toVariant(r.range));
+            // Bounds differ per model (zoom 0..34 vs 0..41, focus 0..230 vs
+            // 0..1104 on two RLC-823A): they come as "<Cmd>Range".
+            QVariant value, range;
+            QString error;
+            if (bcset::get(*session, ch, c, &value, &range, &error, user)) {
+                values.insert(c, value);
+                if (range.isValid())
+                    values.insert(c + QStringLiteral("Range"), range);
             } else {
                 failed.append(c);
-                if (!r.detail.isEmpty())
-                    lastError = r.detail;
+                lastError = error;
             }
         }
         QMetaObject::invokeMethod(
@@ -1298,8 +1242,7 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const
 void DeviceManager::applySetting(int row, const QString &setCommand, const QVariantMap &param)
 {
     const auto session = sessionFor(row);
-    auto client = clientFor(row);
-    if (!session || !client) {
+    if (!session) {
         emit settingApplied(row, setCommand, false, tr("device not ready"));
         return;
     }
@@ -1307,29 +1250,15 @@ void DeviceManager::applySetting(int row, const QString &setCommand, const QVari
         emit settingApplied(row, setCommand, false, tr("requires an administrator account"));
         return;
     }
-    if (bcset::handles(setCommand)) {
-        const int ch = m_entries.at(row).channel;
-        m_pending.addFuture(QtConcurrent::run([this, session, row, ch, setCommand, param] {
-            QString error;
-            const bool ok = bcset::set(*session, ch, setCommand, param, &error);
-            QMetaObject::invokeMethod(
-                this,
-                [this, row, setCommand, ok, error] {
-                    emit settingApplied(row, setCommand, ok, ok ? QString() : error);
-                },
-                Qt::QueuedConnection);
-        }));
-        return;
-    }
-    const Json p = api::toJson(param);
-    m_pending.addFuture(QtConcurrent::run([this, client, row, setCommand, p] {
-        const api::CommandResult r = client->callOne(setCommand, p, /*action=*/0);
-        const bool ok = r.ok;
-        const QString error = ok ? QString() : (r.detail.isEmpty() ? tr("failed") : r.detail);
+    const int ch = m_entries.at(row).channel;
+    const QString user = m_entries.at(row).rec.username;
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, user, setCommand, param] {
+        QString error;
+        const bool ok = bcset::set(*session, ch, setCommand, param, &error, user);
         QMetaObject::invokeMethod(
             this,
             [this, row, setCommand, ok, error] {
-                emit settingApplied(row, setCommand, ok, error);
+                emit settingApplied(row, setCommand, ok, ok ? QString() : error);
             },
             Qt::QueuedConnection);
     }));
@@ -1443,35 +1372,31 @@ QVariantList DeviceManager::hostIds() const
 void DeviceManager::toggleFloodlight(int row)
 {
     const QString cmd = QStringLiteral("SetWhiteLed");
-    auto client = clientFor(row);
-    if (!client) {
+    const auto session = sessionFor(row);
+    if (!session) {
         emit settingApplied(row, cmd, false, tr("device not ready"));
         return;
     }
-    if (row < m_entries.size() && !m_entries.at(row).isAdmin) {
+    if (!m_entries.at(row).isAdmin) {
         emit settingApplied(row, cmd, false, tr("requires an administrator account"));
         return;
     }
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, cmd] {
-        // Read the current config so the toggle flips only on/off and leaves the
-        // user's brightness + auto/schedule mode intact.
-        const api::CommandResult got =
-            client->callOne(QStringLiteral("GetWhiteLed"), Json{{"channel", ch}}, /*action=*/1);
-        bool ok = false;
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, cmd] {
+        // Flip the light as it is now (cmd 288), leaving its settings alone.
+        QVariant value, range;
         QString error;
-        if (got.ok) {
-            const Json wl = jsonObj(got.value, "WhiteLed");
-            Json set = Json{{"channel", ch}, {"state", jsonInt(wl, "state", 0) ? 0 : 1}};
-            for (const char *k : {"mode", "bright", "LightingSchedule"})
-                if (wl.contains(k))
-                    set[k] = jsonRef(wl, k); // preserve settable fields verbatim
-            const api::CommandResult put =
-                client->callOne(cmd, Json{{"WhiteLed", set}}, /*action=*/0);
-            ok = put.ok;
-            error = ok ? QString() : (put.detail.isEmpty() ? tr("failed") : put.detail);
-        } else {
-            error = got.detail.isEmpty() ? tr("floodlight not supported") : got.detail;
+        bool ok = bcset::get(*session, ch, QStringLiteral("GetWhiteLed"), &value, &range, &error);
+        if (ok) {
+            const int state = value.toMap().value(QStringLiteral("WhiteLed")).toMap()
+                                  .value(QStringLiteral("state")).toInt();
+            ok = bcset::set(*session, ch, cmd,
+                            {{QStringLiteral("WhiteLed"),
+                              QVariantMap{{QStringLiteral("channel"), ch},
+                                          {QStringLiteral("state"), state ? 0 : 1}}}},
+                            &error);
+        } else if (error.isEmpty()) {
+            error = tr("floodlight not supported");
         }
         QMetaObject::invokeMethod(
             this, [this, row, cmd, ok, error] { emit settingApplied(row, cmd, ok, error); },
@@ -1504,14 +1429,12 @@ void DeviceManager::fetchAlerts(int row)
         emit alertsLoaded(row, {});
         return;
     }
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch] {
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch] {
         QVariantMap m;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             const int push = bc.readEnable(219, ch);
             const int email = bc.readEnable(217, ch);
@@ -1591,13 +1514,11 @@ void DeviceManager::setAlertEnable(int row, const QString &kind, bool enable)
     quint32 getCmd = 0, setCmd = 0;
     if (!alertCmds(kind, getCmd, setCmd))
         return;
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch, kind, getCmd, setCmd, enable] {
-        BaichuanControl bc(p);
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch, kind, getCmd, setCmd, enable] {
+        BaichuanControl bc(session);
         const bool ok = bc.open() && bc.writeEnable(getCmd, setCmd, ch, enable);
         bc.close();
         QMetaObject::invokeMethod(
@@ -1623,11 +1544,12 @@ void DeviceManager::fetchRecSchedule(int row)
         emit recScheduleLoaded(row, {});
         return;
     }
-    BaichuanControl::Params p{e.rec.addr, 9000, e.rec.username, e.password};
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch] {
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch] {
         QVariantMap m;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             const QByteArray xml = bc.get(81, ch);
             bc.close();
@@ -1665,14 +1587,15 @@ void DeviceManager::writeRecSchedule(int row, const QString &type, const QString
                             tr("requires an administrator account"));
         return;
     }
-    BaichuanControl::Params p{e.rec.addr, 9000, e.rec.username, e.password};
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
     const QByteArray typeTag = "<type>" + type.toLatin1() + "</type>";
     const QByteArray newTable = table.toLatin1();
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch, typeTag, newTable] {
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch, typeTag, newTable] {
         bool ok = false;
         QString err;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             QByteArray xml = bc.get(81, ch);
             const int t = xml.indexOf(typeTag);
@@ -1713,15 +1636,13 @@ void DeviceManager::fetchBcConfig(int row, int cmdId, const QString &reqBody)
         emit bcConfigLoaded(row, cmdId, {});
         return;
     }
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
     const QByteArray body = reqBody.toUtf8();
-    m_pending.addFuture(QtConcurrent::run([this, row, cmdId, p, ch, body] {
+    m_pending.addFuture(QtConcurrent::run([this, row, cmdId, session, ch, body] {
         QVariantMap m;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             m = bc.getConfigFlat(static_cast<quint32>(cmdId), ch, body);
             bc.close();
@@ -1743,15 +1664,13 @@ void DeviceManager::writeBcConfig(int row, int getCmd, int setCmd, const QVarian
         emit settingApplied(row, label, false, tr("requires an administrator account"));
         return;
     }
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
     const QByteArray body = reqBody.toUtf8();
     m_pending.addFuture(QtConcurrent::run(
-        [this, row, getCmd, setCmd, p, ch, changes, body, label] {
-            BaichuanControl bc(p);
+        [this, row, getCmd, setCmd, session, ch, changes, body, label] {
+            BaichuanControl bc(session);
             const bool ok = bc.open()
                 && bc.writeFields(static_cast<quint32>(getCmd), static_cast<quint32>(setCmd), ch,
                                   changes, body);

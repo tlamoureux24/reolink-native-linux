@@ -154,6 +154,39 @@ gone: in 90 s of running the client made no HTTP request at all.
 - Removed: the HTTP PtzCtrl, NvrDownload/Download export and the unused
   HD-clip download.
 
+**Step 6 — done, validated by the user (2026-11-03).**
+Every settings page reads and writes over the session. `bcset` translates
+each command to the HTTP JSON the pages use (get-modify-set for writes):
+ISP 26/25 (exposure words from the SDK's builder: AUTO/LOWNOISE/FRAMERATE/
+MANUAL = auto/shutterFirst/gainFist/manual, the official UI's enum values;
+anti-flicker outdoor/50hz/60hz + enable; backlight backLight/dynamicRange +
+enable), LEDs 208/209 (auto/close/open), OSD 44/45, encoding 56/57, siren
+task 232/231, speaker 264/265, floodlight 289/290 + 288 on/off + 291 state
+push (modes as reolink_aio maps them), siren play 263, quick reply 349, local
+link 76 + 93, ports 37, disks 102, users 58/59 (add / delete / modify, no
+old password, as the SDK), time 104 + DST 106, NTP 38/39, version 80, auto
+update 195/196, firmware 197 / 191 / 227, format 103 (the SDK's
+RemoteInitHdd), reboot 23. The settings that were already Baichuan (basic
+image, motion, AI sensitivity, recording schedule, alert switches) and talk
+now run in the session instead of connections of their own.
+Every read was compared with the HTTP answer on four cameras: identical, but
+for the main codec (`vType`, in no reply — the Encoding page shows it no
+more), the disk's type number, and fields the UI never reads. Writes are not
+tried on the cameras.
+*Privacy masks* (52/53 `<Shelter>`): each coordinate packs the HTTP value in
+its high 16 bits and the reference screen size in its low 16 bits (width for
+x and width, height for y and height) — read off a mask the user drew on an
+RLC-823A: x 1781 on a 3840-wide screen = 1781 × 65536 + 3840; the reading
+matches the HTTP answer exactly. Writing must follow the SDK's builder, not
+the reply: `<Shelter>` logicChannel / channelId / enable, then `<ShelterList>`
+(capital S; the reply says `shelterList`) with one `<Shelter>` per slot —
+`id`, `enable 1` and the coordinates for an area, `enable 0` for a free slot,
+which is how an area is removed. Adding and removing an area were checked
+against the HTTP answer.
+With that, the app sends no HTTP request at all: the HTTP fallback of the
+settings and the per-device HTTP client are gone (bc-probe keeps one, to
+compare).
+
 ## Risks
 
 - **NVR:** the user has none at the moment, so NVR paths are written from the

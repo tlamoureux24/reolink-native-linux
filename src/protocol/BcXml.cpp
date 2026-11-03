@@ -91,4 +91,23 @@ bool setTag(QByteArray &xml, const char *tag, const QString &value)
     return true;
 }
 
+bool setTagIn(QByteArray &xml, const char *parent, const char *tag, const QString &value)
+{
+    const QByteArray pOpen = '<' + QByteArray(parent);
+    const QByteArray pClose = "</" + QByteArray(parent) + '>';
+    int a = xml.indexOf(pOpen + '>');
+    if (a < 0)
+        a = xml.indexOf(pOpen + ' '); // <parent version="1.1">
+    if (a < 0)
+        return false;
+    const int z = xml.indexOf(pClose, a);
+    if (z < 0)
+        return false;
+    QByteArray inner = xml.mid(a, z - a);
+    if (!setTag(inner, tag, value))
+        return false;
+    xml.replace(a, z - a, inner);
+    return true;
+}
+
 } // namespace rl::bcxml

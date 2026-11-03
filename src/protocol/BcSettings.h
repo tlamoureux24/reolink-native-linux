@@ -21,11 +21,12 @@ namespace bcset {
 
 bool handles(const QString &command);
 
-// A Get command's value and, when the HTTP API gave one, its range.
+// A Get command's value and, when the HTTP API gave one, its range. `user`:
+// the logged-in account (the user commands name it in their extension).
 bool get(BcSession &s, int channel, const QString &command, QVariant *value, QVariant *range,
-         QString *error);
+         QString *error, const QString &user = QString());
 bool set(BcSession &s, int channel, const QString &command, const QVariantMap &param,
-         QString *error);
+         QString *error, const QString &user = QString());
 
 // PTZ moves (cmd 18): the HTTP PtzCtrl operation ("Left", "ZoomInc", "Stop",
 // "StartPatrol"…) as the SDK words it ("left", "zoomInc"…).

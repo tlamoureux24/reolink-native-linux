@@ -27,6 +27,10 @@ Node parse(const QByteArray &xml);
 // there is no such element.
 bool setTag(QByteArray &xml, const char *tag, const QString &value);
 
+// The same inside the first <parent>…</parent> only (for tags such as <mode>
+// or <enable> that several blocks carry).
+bool setTagIn(QByteArray &xml, const char *parent, const char *tag, const QString &value);
+
 QByteArray escaped(const QString &text);
 
 } // namespace rl::bcxml
