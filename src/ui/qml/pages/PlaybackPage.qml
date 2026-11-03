@@ -53,12 +53,11 @@ Item {
         camRotation = i && i.rotationOverride ? i.rotationOverride : 0;
     }
     property bool _autoplayed: false // test hook guard
-    // HD mode streams the full-resolution main stream over native Baichuan; off =
-    // light sub-stream (FLV) scrubbing.
+    // HD mode plays the full-resolution main stream; off = the light sub stream
+    // (quick scrubbing). Both inside the device's Baichuan session.
     property bool hdMode: false
     // Transport shared by the single pane and every grid pane. Pause keeps the
-    // streams open (file sources) so "next frame" can step; the Baichuan HD
-    // session is paced by the device, so there pause still stops.
+    // streams open so "next frame" can step.
     // A message kept on screen must follow a live language switch: remember
     // how to build it and rebuild it when the language changes.
     property var _statusFn: null
@@ -75,7 +74,7 @@ Item {
     property real rate: 1.0
     property bool paused: false
     property bool soundOn: false     // single pane only; silent unless 1x and playing
-    readonly property bool canPause: page.paneCount === 4 || !page.hdMode
+    readonly property bool canPause: true
     function stepFrame() {
         if (page.paneCount === 4) {
             for (var i = 0; i < paneRepeater.count; i++) {
@@ -293,7 +292,7 @@ Item {
     }
 
     // False when the Playback page isn't on screen — stop streaming so a Baichuan
-    // session (or FLV stream) isn't left running on the connection-limited NVR.
+    // playback isn't left running in the device's session.
     property bool active: true
     onActiveChanged: if (!active) { _suppressResume = true; player.stop(); stopAllPanes(); }
 
@@ -335,10 +334,8 @@ Item {
         }
         return false;
     }
-    // The NVR's FLV endpoint streams ONE recording file per connection, and
-    // motion events are stored as separate files — so continuous footage ends
-    // in an EOF exactly at each event boundary, killing playback right at the
-    // red marker. When the stream ends but footage continues past the playhead,
+    // Playback goes from file to file by itself; should it still end while
+    // footage continues past the playhead (a file the device would not send),
     // reopen at the next second instead of giving up.
     property real _lastAutoResume: -10
     property bool _suppressResume: false   // a user Stop must stay stopped
@@ -387,36 +384,27 @@ Item {
             player.stop();
             return;
         }
-        if (page.hdMode) {
-            page.playHd(sec);
-            return;
-        }
-        // Scrub against the sub stream: it is light and always landscape, so the
-        // timeline stays responsive. (HD mode below plays the full-res main.)
-        player.loop = false;
-        var url = Devices.playbackUrl(page.deviceRow, epochAt(sec), false);
-        if (url.length > 0) {
-            player.expectedSize = Devices.declaredSize(page.deviceRow, false); // sub
-            player.source = url;
-            player.start();
-        }
+        page.playStream(epochAt(sec));
     }
 
-    // HD: stream the full-resolution main stream over native Baichuan (TCP 9000)
-    // from this exact moment — realtime and frame-accurate, the way the official
-    // apps do it (HTTP-FLV can't carry the HEVC main stream, cmd=Download is slow).
-    function playHd(sec) {
+    // Play the recordings from this moment inside the device's Baichuan session,
+    // file by file as the official client does: the sub stream (light, quick to
+    // scrub) or, in HD mode, the full-resolution main stream.
+    function playStream(epoch) {
         if (page.deviceRow < 0)
             return;
-        page.setStatus(function () { return qsTr("HD"); });
-        // Seek the running session in place (no reconnect) when possible; else open
-        // a fresh Baichuan session.
-        if (player.state === StreamPlayer.Streaming
-            && Devices.seekBaichuanPlayback(page.deviceRow, epochAt(sec)))
+        if (page.hdMode)
+            page.setStatus(function () { return qsTr("HD"); });
+        // Seek the running playback in place when it is of the wanted quality;
+        // else start one (an SD/HD switch needs the other stream).
+        if (player.state === StreamPlayer.Streaming && page._playingHd === page.hdMode
+            && Devices.seekBaichuanPlayback(page.deviceRow, epoch))
             return;
         player.loop = false;
-        Devices.startBaichuanPlayback(page.deviceRow, epochAt(sec), player, true);
+        page._playingHd = page.hdMode;
+        Devices.startBaichuanPlayback(page.deviceRow, epoch, player, page.hdMode);
     }
+    property bool _playingHd: false // quality of the running playback
 
     property real _pendingPlayEpoch: 0  // play this once the day's search returns
     property real _pendingPlaySecs: -1  // resume here after a camera switch
@@ -479,6 +467,12 @@ Item {
                 // If this camera just joined mid-playback, start it (alone) at
                 // the watched moment — the other panes never stopped.
                 page.resumePaneIfPending(row);
+                // Test hook: play the grid once from this camera's first recording.
+                if (typeof playbackAutoplay !== "undefined" && playbackAutoplay
+                    && segments.length > 0 && !page._autoplayed) {
+                    page._autoplayed = true;
+                    page.playAt(segments[0].start);
+                }
                 return;
             }
             if (row === page.deviceRow) {
@@ -497,12 +491,7 @@ Item {
                     page._pendingPlayEpoch = 0;
                     page._pendingPlaySecs = -1;
                     page._suppressResume = false; // event playback crosses file boundaries too
-                    var url = Devices.playbackUrl(page.deviceRow, ep, false); // sub stream
-                    if (url.length > 0) {
-                        player.expectedSize = Devices.declaredSize(page.deviceRow, false);
-                        player.source = url;
-                        player.start();
-                    }
+                    page.playStream(ep);
                 } else if (page._pendingPlaySecs >= 0) {
                     // Camera switch: resume at the same playhead moment (playAt
                     // respects SD/HD mode and stops if no recording covers it).
@@ -989,8 +978,8 @@ Item {
                     }
                 }
                 Item { Layout.fillWidth: true }
-                // Quality toggle: SD = light sub-stream (FLV) scrubbing; HD = full-res
-                // main stream over native Baichuan. Grid mode is forced to the sub
+                // Quality toggle: SD = light sub-stream scrubbing; HD = full-res
+                // main stream. Grid mode is forced to the sub
                 // stream (as in the official client): the device budget allows only
                 // 2 concurrent main streams, and a 4-pane grid would blow past it.
                 Rectangle {

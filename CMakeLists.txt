@@ -40,6 +40,7 @@ add_library(reolink_core STATIC
     src/protocol/BcUdpLink.h src/protocol/BcUdpLink.cpp
     src/protocol/BcSession.h src/protocol/BcSession.cpp
     src/protocol/BcDevice.h src/protocol/BcDevice.cpp
+    src/protocol/BcRecordings.h src/protocol/BcRecordings.cpp
     src/protocol/BaichuanClient.h src/protocol/BaichuanClient.cpp
     src/protocol/BaichuanControl.h src/protocol/BaichuanControl.cpp
     src/device/DeviceManager.h src/device/DeviceManager.cpp

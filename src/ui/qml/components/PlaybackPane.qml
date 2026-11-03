@@ -5,7 +5,7 @@ import QtMultimedia
 import ReolinkApp
 import ReolinkApp.Core
 
-// One cell of the synced playback grid: sub-stream FLV video for a single
+// One cell of the synced playback grid: sub-stream video for a single
 // camera, its own recordings for the selected day, and an honest per-camera
 // answer when the shared playhead sits where THIS camera has no footage.
 // The page owns the playhead and drives every pane from one timeline; sync
@@ -64,14 +64,17 @@ Rectangle {
 
     function epochOf(sec) { return Math.floor(dayEpoch + sec); }
 
-    function playHd(sec) {
-        // Seek the running Baichuan session in place when possible (no
-        // reconnect); otherwise open one at this moment.
-        if (streaming && Devices.seekBaichuanPlayback(deviceRow, epochOf(sec)))
+    // Recordings inside the device's Baichuan session: sub stream in the grid,
+    // main when HD is on. Seek the running playback in place when possible.
+    function playStream(epoch) {
+        // In place only when the running playback is of the wanted quality.
+        if (streaming && _playingHd === hdActive && Devices.seekBaichuanPlayback(deviceRow, epoch))
             return;
         player.loop = false;
-        Devices.startBaichuanPlayback(deviceRow, epochOf(sec), player, true);
+        _playingHd = hdActive;
+        Devices.startBaichuanPlayback(deviceRow, epoch, player, hdActive);
     }
+    property bool _playingHd: false // quality of the running playback
 
     function setHd(on) {
         if (hdActive === on)
@@ -92,9 +95,8 @@ Rectangle {
         return false;
     }
 
-    // The FLV endpoint streams ONE recording file per connection, and events
-    // are separate files — continuous footage EOFs at every event boundary.
-    // Reopen at the next second when footage continues past the playhead.
+    // Playback goes from file to file by itself; should it still end while
+    // footage continues past the playhead, reopen at the next second.
     property real _lastAutoResume: -10
     property bool _suppressResume: false
 
@@ -129,17 +131,7 @@ Rectangle {
             player.stop();
             return;
         }
-        if (hdActive) {
-            playHd(sec);
-            return;
-        }
-        var url = Devices.playbackUrl(deviceRow, epoch, false); // sub stream
-        if (url.length === 0)
-            return;
-        player.loop = false;
-        player.expectedSize = Devices.declaredSize(deviceRow, false);
-        player.source = url;
-        player.start();
+        playStream(epoch);
     }
 
     function stopPlayback() {
@@ -156,7 +148,7 @@ Rectangle {
     StreamPlayer {
         id: player; videoSink: video.videoSink; retryOnError: true
         playbackRate: root.rate
-        paused: root.paused && !root.hdActive // Baichuan HD is device-paced
+        paused: root.paused
     }
     Component.onDestruction: player.stop()
 

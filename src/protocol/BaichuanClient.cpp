@@ -6,7 +6,7 @@
 
 #include <QDateTime>
 #include <QElapsedTimer>
-#include <QTcpSocket>
+#include <QQueue>
 #include <QThread>
 #include <QtEndian>
 
@@ -22,101 +22,7 @@ namespace rl {
 
 namespace {
 
-constexpr quint32 kMagic = 0x0ABCDEF0;
-constexpr quint32 kMagicRev = 0x0FEDCBA0;
 constexpr int kMaxRing = 8 * 1024 * 1024; // backpressure cap for the decoded buffer
-
-void putLE32(QByteArray &b, quint32 v)
-{
-    char t[4];
-    qToLittleEndian(v, t);
-    b.append(t, 4);
-}
-void putLE16(QByteArray &b, quint16 v)
-{
-    char t[2];
-    qToLittleEndian(v, t);
-    b.append(t, 2);
-}
-quint32 getLE32(const char *p)
-{
-    return qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(p));
-}
-quint16 getLE16(const char *p)
-{
-    return qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(p));
-}
-
-struct Msg {
-    quint32 id = 0;
-    quint8 channel = 0;
-    quint16 msgNum = 0;
-    quint16 code = 0;
-    quint16 cls = 0;
-    quint32 payloadOffset = 0;
-    QByteArray body;
-};
-
-// Serialize one BC message. `cls` selects legacy(0x6514, 20-byte) vs modern.
-QByteArray frame(quint32 id, quint8 ch, quint8 streamType, quint16 msgNum, quint16 code,
-                 quint16 cls, const QByteArray &body)
-{
-    const bool hasPayloadOffset = (cls == 0x6414 || cls == 0x0000);
-    QByteArray m;
-    putLE32(m, kMagic);
-    putLE32(m, id);
-    putLE32(m, static_cast<quint32>(body.size()));
-    m.append(static_cast<char>(ch));
-    m.append(static_cast<char>(streamType));
-    putLE16(m, msgNum);
-    putLE16(m, code);
-    putLE16(m, cls);
-    if (hasPayloadOffset)
-        putLE32(m, 0); // no Extension on anything we send
-    m.append(body);
-    return m;
-}
-
-// Pull one complete message from `buf` (consuming it). False if incomplete.
-bool parseMessage(QByteArray &buf, Msg &m)
-{
-    if (buf.size() < 20)
-        return false;
-    const quint32 magic = getLE32(buf.constData());
-    if (magic != kMagic && magic != kMagicRev)
-        return false; // caller resyncs
-    const quint32 bodyLen = getLE32(buf.constData() + 8);
-    const quint16 cls = getLE16(buf.constData() + 18);
-    const bool hasPayloadOffset = (cls == 0x6414 || cls == 0x0000);
-    const int headerLen = hasPayloadOffset ? 24 : 20;
-    if (buf.size() < headerLen + static_cast<int>(bodyLen))
-        return false;
-    m.id = getLE32(buf.constData() + 4);
-    m.channel = static_cast<quint8>(buf[12]);
-    m.msgNum = getLE16(buf.constData() + 14);
-    m.code = getLE16(buf.constData() + 16);
-    m.cls = cls;
-    m.payloadOffset = hasPayloadOffset ? getLE32(buf.constData() + 20) : 0;
-    m.body = buf.mid(headerLen, static_cast<int>(bodyLen));
-    buf.remove(0, headerLen + static_cast<int>(bodyLen));
-    return true;
-}
-
-QByteArray timeXml(const QString &tag, const QDateTime &dt)
-{
-    const QDate d = dt.date();
-    const QTime t = dt.time();
-    return QStringLiteral("<%1><year>%2</year><month>%3</month><day>%4</day>"
-                          "<hour>%5</hour><minute>%6</minute><second>%7</second></%1>")
-        .arg(tag)
-        .arg(d.year())
-        .arg(d.month())
-        .arg(d.day())
-        .arg(t.hour())
-        .arg(t.minute())
-        .arg(t.second())
-        .toUtf8();
-}
 
 // cmd 3 live request, as the official SDK writes it (BaichuanPreviewer): the
 // handle is (stream type << 8) | channel, and "newestIFrame" makes the device
@@ -225,116 +131,18 @@ void BaichuanClient::pushAnnexB(const QByteArray &bytes, bool block)
 
 void BaichuanClient::run()
 {
-    if (m_p.startEpoch <= 0) {
+    if (m_p.startEpoch <= 0)
         runSessionLive();
-        QMutexLocker lock(&m_mutex);
-        m_finished = true;
-        m_cond.wakeAll();
-        return;
-    }
-    QTcpSocket sock;
-    QByteArray aesKey;
-    if (connectAndLogin(sock, aesKey) && !m_abort.load()) {
-        if (startStream(sock, aesKey))
-            pumpMedia(sock, aesKey, /*streamMsgNum=*/20);
-    }
+    else
+        runSessionReplay();
     QMutexLocker lock(&m_mutex);
     m_finished = true;
     m_cond.wakeAll();
 }
 
-bool BaichuanClient::connectAndLogin(QTcpSocket &sock, QByteArray &aesKey)
+void BaichuanClient::setRate(double rate)
 {
-    sock.connectToHost(m_p.host, static_cast<quint16>(m_p.port));
-    if (!sock.waitForConnected(5000))
-        return false;
-
-    QByteArray netBuf;
-    auto recvMatch = [&](quint16 wantMsgNum, Msg &out) -> bool {
-        // Short per-wait timeout so abort (destruction) is honored within ~0.3s;
-        // the loop count still allows several seconds total for a slow login.
-        for (int i = 0; i < 40 && !m_abort.load(); ++i) {
-            while (parseMessage(netBuf, out))
-                if (out.msgNum == wantMsgNum)
-                    return true;
-            if (!sock.waitForReadyRead(300))
-                continue;
-            netBuf.append(sock.readAll());
-        }
-        return false;
-    };
-
-    // Step 1: legacy-upgrade requesting AES (this firmware refuses BCEncrypt).
-    // The login handshake is connection-level, ALWAYS channel 0 — the NVR rejects
-    // a login framed with a camera channel. The camera is selected later by the
-    // stream request (header channel byte + <channelId> in its XML).
-    sock.write(frame(1, 0, 0, 1, 0xDC12, 0x6514, QByteArray()));
-    sock.flush();
-    Msg nonceMsg;
-    if (!recvMatch(1, nonceMsg))
-        return false;
-    const QByteArray nonceXml = bc::xorCrypt(nonceMsg.body, nonceMsg.channel);
-    const int a = nonceXml.indexOf("<nonce>");
-    const int z = nonceXml.indexOf("</nonce>");
-    if (a < 0 || z < 0)
-        return false;
-    const QString nonce = QString::fromUtf8(nonceXml.mid(a + 7, z - a - 7));
-    aesKey = bc::aesKey(nonce, m_p.password);
-
-    // Step 2: modern login (XOR body — msg_id 1 is always XOR).
-    const QByteArray user = bc::modernHash(m_p.username, nonce);
-    const QByteArray pass = bc::modernHash(m_p.password, nonce);
-    QByteArray login = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<LoginUser version=\"1.1\">\n"
-                       "<userName>" + user + "</userName>\n<password>" + pass +
-                       "</password>\n<userVer>1</userVer>\n</LoginUser>\n"
-                       "<LoginNet version=\"1.1\"><type>LAN</type><udpPort>0</udpPort></LoginNet>\n</body>\n";
-    sock.write(frame(1, 0, 0, 1, 0, 0x6414, bc::xorCrypt(login, 0)));
-    sock.flush();
-    Msg loginReply;
-    if (!recvMatch(1, loginReply))
-        return false;
-    // Carry any leftover bytes into the media pump.
-    m_loginTail = netBuf;
-    return loginReply.code == 200;
-}
-
-bool BaichuanClient::startStream(QTcpSocket &sock, const QByteArray &aesKey)
-{
-    const quint8 streamByte = m_p.mainStream ? 0 : 1;
-    const QString streamName = m_p.mainStream ? QStringLiteral("mainStream")
-                                              : QStringLiteral("subStream");
-    QByteArray netBuf = m_loginTail;
-
-    // Recorded playback by time (cmd 143). Media follows on msg_num 20.
-    sendPlayback(sock, aesKey, m_p.startEpoch);
-    m_streamTail = netBuf;
-    return true;
-}
-
-// Request recorded playback from `startEpoch` by time (cmd 143). Used both to
-// start playback and to seek in place. Structure verified across independent
-// PCAP-derived implementations: a FileInfoList/FileInfo with the channel, stream,
-// and a start/end time range.
-void BaichuanClient::sendPlayback(QTcpSocket &sock, const QByteArray &aesKey, qint64 startEpoch)
-{
-    const quint8 streamByte = m_p.mainStream ? 0 : 1;
-    const QByteArray streamName = m_p.mainStream ? QByteArrayLiteral("mainStream")
-                                                 : QByteArrayLiteral("subStream");
-    const QDateTime start = QDateTime::fromSecsSinceEpoch(startEpoch);
-    const QDateTime dayEnd(start.date(), QTime(23, 59, 59));
-    const QByteArray uid = m_p.uid.toUtf8();
-    const QByteArray ch = QByteArray::number(m_p.channel);
-    const QByteArray uidEl = uid.isEmpty() ? QByteArray() : ("<uid>" + uid + "</uid>\n");
-
-    const QByteArray byTime =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<FileInfoList version=\"1.1\">\n<FileInfo>\n"
-        "<logicChnBitmap>255</logicChnBitmap>\n<channelId>" + ch + "</channelId>\n" + uidEl +
-        "<supportSub>" + QByteArray(m_p.mainStream ? "0" : "1") + "</supportSub>\n"
-        "<streamType>" + streamName + "</streamType>\n"
-        + timeXml(QStringLiteral("startTime"), start) + "\n"
-        + timeXml(QStringLiteral("endTime"), dayEnd) + "\n</FileInfo>\n</FileInfoList>\n</body>\n";
-    sock.write(frame(143, m_p.channel, streamByte, 20, 0, 0x6414, bc::aesCfb(byTime, aesKey, false)));
-    sock.flush();
+    m_rate.store(qBound(0.125, rate, 16.0));
 }
 
 bool BaichuanClient::seek(qint64 startEpoch)
@@ -346,127 +154,6 @@ bool BaichuanClient::seek(qint64 startEpoch)
         return false;
     m_seekEpoch = startEpoch;
     return true;
-}
-
-void BaichuanClient::pumpMedia(QTcpSocket &sock, const QByteArray &aesKey, quint16 streamMsgNum)
-{
-    BcMediaParser parser;
-    bool started = false;
-    // After a seek, discard old in-flight frames until an I-frame at the new
-    // position (POSIX seconds); 0 = no seek pending.
-    qint64 seekTarget = 0;
-    // Recorded playback is delivered faster than realtime; pace it to 1x from the
-    // frame timestamps so it doesn't fast-forward. Live preview is not paced.
-    const bool pace = m_p.startEpoch > 0;
-    QElapsedTimer clock;
-    quint32 firstMicros = 0;
-    bool audioSeen = false;
-    parser.onAudio = [&](const BcMediaParser::AudioFrame &a) {
-        if (!started || !m_p.onAudio)
-            return; // nothing to play with until the video has started
-        if (!audioSeen) {
-            audioSeen = true;
-            qCInfo(lcProto) << "baichuan stream: audio" << (a.aac ? "AAC" : "ADPCM") << a.data.size()
-                            << "bytes, starts" << a.data.left(4).toHex();
-        }
-        m_p.onAudio(a);
-    };
-    parser.onVideo = [&](const BcMediaParser::VideoFrame &f) {
-        if (f.codec != BcMediaParser::Codec::Unknown) {
-            QMutexLocker lock(&m_mutex);
-            if (m_format.isEmpty())
-                m_format = (f.codec == BcMediaParser::Codec::H265) ? QStringLiteral("hevc")
-                                                                   : QStringLiteral("h264");
-        }
-        if (!started) {
-            if (!f.keyFrame)
-                return; // recorded playback opens mid-GOP; wait for the first I-frame
-            // On a seek, the connection still carries old-position frames briefly;
-            // drop them until an I-frame lands at the requested time.
-            if (seekTarget > 0 && f.time != 0 && qAbs(qint64(f.time) - seekTarget) > 120)
-                return;
-            started = true;
-            seekTarget = 0;
-        }
-        if (pace && f.microseconds) {
-            if (!clock.isValid()) {
-                clock.start();
-                firstMicros = f.microseconds;
-            }
-            const qint64 targetMs = (qint64(f.microseconds) - qint64(firstMicros)) / 1000;
-            const qint64 elapsed = clock.elapsed();
-            if (targetMs < 0 || targetMs - elapsed > 10000) {
-                clock.restart(); // timestamp discontinuity/seek — rebase
-                firstMicros = f.microseconds;
-            } else {
-                for (qint64 wait = targetMs - elapsed; wait > 0 && !m_abort.load();
-                     wait = targetMs - clock.elapsed())
-                    QThread::msleep(static_cast<unsigned long>(qMin<qint64>(wait, 50)));
-            }
-        }
-        pushAnnexB(f.annexB);
-    };
-
-    QByteArray netBuf = m_streamTail;
-    Msg m;
-    int stalls = 0;
-    while (!m_abort.load()) {
-        // In-place seek: reissue by-time playback and reset the media pipeline. The
-        // BC message framing stays intact (continuous connection); only the BCMedia
-        // layer resets, resyncing on the new position's first I-frame.
-        qint64 seekTo = 0;
-        {
-            QMutexLocker lock(&m_mutex);
-            if (m_seekEpoch > 0) {
-                seekTo = m_seekEpoch;
-                m_seekEpoch = 0;
-            }
-        }
-        if (seekTo > 0) {
-            sendPlayback(sock, aesKey, seekTo);
-            parser.reset();
-            started = false;
-            seekTarget = seekTo; // discard until an I-frame at the new position
-            clock.invalidate();
-            firstMicros = 0;
-            QMutexLocker lock(&m_mutex);
-            m_ring.clear(); // drop queued old-position frames so playback jumps
-            m_cond.wakeAll();
-        }
-        if (!parseMessage(netBuf, m)) {
-            // Short wait so abort is honored quickly; recorded playback bursts then
-            // stalls, so nudge it with a keep-alive after ~1s of silence.
-            if (!sock.waitForReadyRead(300)) {
-                if (++stalls >= 4) {
-                    stalls = 0;
-                    sock.write(frame(93, 0, 0, 99, 0, 0x6414, QByteArray())); // keep-alive: connection-level
-                    sock.flush();
-                }
-                continue;
-            }
-            stalls = 0;
-            netBuf.append(sock.readAll());
-            continue;
-        }
-        if (m.msgNum != streamMsgNum)
-            continue;
-        // FullAES: the Extension carries <encryptLen> — AES-decrypt that many bytes
-        // of the payload, the remainder is plaintext.
-        int encLen = 0;
-        if (m.payloadOffset > 0) {
-            const QByteArray ext = bc::aesCfb(m.body.left(m.payloadOffset), aesKey, true);
-            const int p = ext.indexOf("<encryptLen>");
-            if (p >= 0) {
-                const int q = ext.indexOf("</encryptLen>", p);
-                encLen = ext.mid(p + 12, q - p - 12).toInt();
-            }
-        }
-        const QByteArray payload = m.body.mid(m.payloadOffset);
-        const QByteArray media = encLen > 0
-            ? bc::aesCfb(payload.left(encLen), aesKey, true) + payload.mid(encLen)
-            : payload;
-        parser.append(media);
-    }
 }
 
 } // namespace rl
@@ -590,6 +277,357 @@ void BaichuanClient::runSessionLive()
             s->send(4, quint8(live->channel), live->id, {},
                     bc::aesCfb(previewStopXml(live->channel, live->main), s->aesKey(), false));
     }
+}
+
+
+// Recorded playback inside the device's session, the way the official client
+// plays recordings (BaichuanReplayer): one FILE at a time — cmd 5 with the
+// file's path, cmd 123 to seek in it, cmd 7 to stop — then the next file.
+//
+// A device sends a file as fast as it can (about ten times real time on a
+// LAN; <playSpeed> in the request did not slow an RLC-811A down), while this
+// thread plays it at the chosen speed. What waits is queued here, and the
+// queue is bounded the same way: past kQueueHighSecs of video the file is
+// stopped (cmd 7), and below kQueueLowSecs it is asked again from where the
+// queue ends (cmd 5 + 123), the frames already queued being skipped.
+void BaichuanClient::runSessionReplay()
+{
+    constexpr double kQueueHighSecs = 20;
+    constexpr double kQueueLowSecs = 5;
+    constexpr qint64 kQueueMaxBytes = 96LL * 1024 * 1024;
+
+    const QVector<BcReplayFile> &files = m_p.replayFiles;
+    if (files.isEmpty())
+        return;
+    BcSession::Params sp;
+    sp.target = {m_p.host, m_p.port, QString(), false};
+    sp.username = m_p.username;
+    sp.password = m_p.password;
+    const std::shared_ptr<BcSession> s = BcSession::acquire(sp);
+    if (!s->waitReady(30000, &m_abort))
+        return;
+    const QByteArray key = s->aesKey();
+    const QByteArray uid = m_p.uid.toUtf8();
+    const QByteArray ch = QByteArray::number(m_p.channel);
+    const QByteArray streamName = m_p.mainStream ? "mainStream" : "subStream";
+    const QByteArray ext = BcSession::channelExtension(m_p.channel);
+    const quint8 hdrCh = quint8(m_p.channel + 1);
+
+    // The file playing `epoch`, else the first one starting after it.
+    auto fileAt = [&](qint64 epoch) {
+        for (int i = 0; i < files.size(); ++i)
+            if (epoch < files[i].end && (epoch >= files[i].start || i == 0 || epoch >= files[i - 1].end))
+                return i;
+        return -1;
+    };
+    auto tm = [](const QDateTime &t) {
+        return "<year>" + QByteArray::number(t.date().year()) + "</year>\n<month>"
+            + QByteArray::number(t.date().month()) + "</month>\n<day>" + QByteArray::number(t.date().day())
+            + "</day>\n<hour>" + QByteArray::number(t.time().hour()) + "</hour>\n<minute>"
+            + QByteArray::number(t.time().minute()) + "</minute>\n<second>"
+            + QByteArray::number(t.time().second()) + "</second>\n";
+    };
+
+    // Frames from the session worker, in stream order, waiting for their time.
+    struct Item {
+        bool audio = false;
+        BcMediaParser::VideoFrame video;
+        BcMediaParser::AudioFrame sound;
+    };
+    struct Queue {
+        QMutex mutex;
+        QQueue<Item> items;
+        qint64 bytes = 0;
+        quint32 headUs = 0, tailUs = 0; // video timestamps at both ends
+        bool haveVideo = false;
+        quint32 skipUntilUs = 0;        // after a resume: already queued up to here
+        bool skipping = false;
+        bool markFirst = false;         // the next video frame starts a file
+        quint32 fileUs0 = 0;            // its timestamp
+        bool haveFileUs0 = false;
+        std::atomic<qint64> lastMedia{0};
+        std::atomic<bool> resetParser{false};
+        std::atomic<bool> refused{false};
+        BcMediaParser parser; // session worker only
+        double queuedSecs()
+        {
+            return haveVideo ? (qint64(tailUs) - qint64(headUs)) / 1e6 : 0;
+        }
+        void clear()
+        {
+            items.clear();
+            bytes = 0;
+            haveVideo = false;
+            skipping = false;
+        }
+    };
+    Queue q;
+    q.parser.onVideo = [&q](const BcMediaParser::VideoFrame &f) {
+        QMutexLocker lock(&q.mutex);
+        if (q.skipping) {
+            // Queued before the stream was stopped; a timestamp far behind
+            // means the device restarted its clock, so nothing is skipped.
+            const qint64 us = f.microseconds, until = q.skipUntilUs;
+            if (us <= until && us + 30000000 > until)
+                return;
+            q.skipping = false;
+        }
+        if (q.markFirst) {
+            q.markFirst = false;
+            q.fileUs0 = f.microseconds;
+            q.haveFileUs0 = true;
+        }
+        if (!q.haveVideo) {
+            q.headUs = f.microseconds;
+            q.haveVideo = true;
+        }
+        q.tailUs = f.microseconds;
+        q.bytes += f.annexB.size();
+        Item it;
+        it.video = f;
+        q.items.enqueue(it);
+    };
+    q.parser.onAudio = [&q](const BcMediaParser::AudioFrame &a) {
+        QMutexLocker lock(&q.mutex);
+        if (q.skipping)
+            return;
+        Item it;
+        it.audio = true;
+        it.sound = a;
+        q.items.enqueue(it);
+    };
+
+    // What the device is doing with the current file.
+    enum class Feed { Sending, Stopped, Done };
+    Feed feed = Feed::Done;
+    int current = -1;
+    quint32 id = 0;
+    int seq = 0;
+    qint64 fileStartedAt = 0;
+    auto stopFile = [&] {
+        if (current < 0 || feed != Feed::Sending)
+            return;
+        s->unroute(id);
+        const BcReplayFile &f = files[current];
+        const QByteArray stop = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<FileInfoList version=\"1.1\">\n<FileInfo>\n<uid>"
+            + uid + "</uid>\n<channelId>" + ch + "</channelId>\n<name>" + f.name.toUtf8()
+            + "</name>\n<streamType>" + streamName + "</streamType>\n<Id>" + f.id.toUtf8()
+            + "</Id>\n</FileInfo>\n</FileInfoList>\n</body>\n";
+        if (s->isAlive())
+            s->send(7, 0, id, {}, bc::aesCfb(stop, key, false));
+        feed = Feed::Stopped;
+    };
+    auto seekInFile = [&](qint64 epoch) {
+        const QByteArray seek = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<ReplaySeek version=\"1.1\">\n<channelId>"
+            + ch + "</channelId>\n<seq>" + QByteArray::number(++seq) + "</seq>\n<seekTime>\n"
+            + tm(QDateTime::fromSecsSinceEpoch(epoch)) + "</seekTime>\n</ReplaySeek>\n</body>\n";
+        s->send(123, hdrCh, id, bc::aesCfb(ext, key, false), bc::aesCfb(seek, key, false));
+    };
+    // `fresh`: a new file or position (else the rest of a file stopped by the
+    // queue bound, whose timestamps carry on).
+    qint64 fileEpoch0 = 0; // where the current file was asked from
+    auto startFile = [&](int i, qint64 epoch, bool fresh) {
+        if (fresh) {
+            QMutexLocker lock(&q.mutex);
+            q.markFirst = true;
+            q.haveFileUs0 = false;
+            fileEpoch0 = qMax(epoch, files[i].start);
+        }
+        current = i;
+        feed = Feed::Sending;
+        id = s->newMessId();
+        q.resetParser = true;
+        fileStartedAt = QDateTime::currentMSecsSinceEpoch();
+        q.lastMedia = 0;
+        s->route(id, [&q, key](const BcMessage &m) {
+            if (m.cmd != 5)
+                return;
+            if (m.payloadOffset == 0) {
+                if (m.status != 0 && m.status != 200)
+                    q.refused = true;
+                return; // the XML reply, not media
+            }
+            if (q.resetParser.exchange(false))
+                q.parser.reset();
+            q.lastMedia = QDateTime::currentMSecsSinceEpoch();
+            q.parser.append(mediaBytes(m.body, m.payloadOffset, key));
+        });
+        const BcReplayFile &f = files[i];
+        const QByteArray play = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<FileInfoList version=\"1.1\">\n<FileInfo>\n<channelId>"
+            + ch + "</channelId>\n<Id>" + f.id.toUtf8() + "</Id>\n<uid>" + uid + "</uid>\n<supportSub>"
+            + QByteArray(m_p.mainStream ? "0" : "1") + "</supportSub>\n<streamType>" + streamName
+            + "</streamType>\n</FileInfo>\n</FileInfoList>\n</body>\n";
+        s->send(5, hdrCh, id, bc::aesCfb(ext, key, false), bc::aesCfb(play, key, false));
+        if (epoch > f.start + 1)
+            seekInFile(epoch);
+    };
+
+    const int first = fileAt(m_p.startEpoch);
+    if (first < 0)
+        return;
+    startFile(first, m_p.startEpoch, true);
+    qCInfo(lcProto) << "replay opened:" << streamName << "from"
+                    << QDateTime::fromSecsSinceEpoch(m_p.startEpoch).toString(Qt::ISODate) << "on"
+                    << s->linkDescription();
+
+    bool started = false; // a key frame was played since the last (re)start
+    QElapsedTimer clock;
+    quint32 firstMicros = 0;
+    double pacedRate = m_rate.load();
+    while (!m_abort.load() && s->isAlive() && !q.refused) {
+        qint64 seekTo = 0;
+        {
+            QMutexLocker lock(&m_mutex);
+            if (m_seekEpoch > 0) {
+                seekTo = m_seekEpoch;
+                m_seekEpoch = 0;
+            }
+        }
+        if (seekTo > 0) {
+            const int target = fileAt(seekTo);
+            {
+                QMutexLocker lock(&q.mutex);
+                q.clear();
+            }
+            {
+                QMutexLocker lock(&m_mutex);
+                m_ring.clear(); // drop queued old-position frames so playback jumps
+                m_cond.wakeAll();
+            }
+            started = false;
+            clock.invalidate();
+            if (target < 0) {
+                stopFile();
+                break;
+            }
+            if (target == current && feed == Feed::Sending) {
+                {
+                    QMutexLocker lock(&q.mutex);
+                    q.markFirst = true;
+                    q.haveFileUs0 = false;
+                }
+                fileEpoch0 = seekTo;
+                q.resetParser = true;
+                seekInFile(seekTo);
+            } else {
+                stopFile();
+                startFile(target, seekTo, true);
+            }
+        }
+
+        // Keep the queue bounded: stop the file when far ahead, ask for the
+        // rest when it runs low; the next file once this one is all queued if
+        // it follows on (after a gap, playback ends where the page's playhead
+        // expects it to, and the page starts the next one when it gets there).
+        double queued = 0;
+        qint64 queuedBytes = 0;
+        quint32 tailUs = 0, fileUs0 = 0;
+        bool haveFileUs0 = false;
+        {
+            QMutexLocker lock(&q.mutex);
+            queued = q.queuedSecs();
+            queuedBytes = q.bytes;
+            tailUs = q.tailUs;
+            fileUs0 = q.fileUs0;
+            haveFileUs0 = q.haveFileUs0;
+        }
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (feed == Feed::Sending) {
+            if (queued > kQueueHighSecs || queuedBytes > kQueueMaxBytes) {
+                qCDebug(lcProto) << "replay: queue full (" << queued << "s," << queuedBytes
+                                 << "bytes), file stopped";
+                stopFile();
+                QMutexLocker lock(&q.mutex);
+                q.skipUntilUs = tailUs;
+            } else if (q.lastMedia ? now - q.lastMedia > 4000 : now - fileStartedAt > 15000) {
+                stopFile(); // the whole file is here
+                feed = Feed::Done;
+                qCDebug(lcProto) << "replay: file" << files[current].name << "received";
+            }
+        } else if (queued < kQueueLowSecs && current >= 0) {
+            if (feed == Feed::Stopped) {
+                // Again from where the queue ends; what was queued is skipped.
+                const qint64 resumeAt = fileEpoch0
+                    + (haveFileUs0 ? (qint64(tailUs) - qint64(fileUs0)) / 1000000 : 0);
+                {
+                    QMutexLocker lock(&q.mutex);
+                    q.skipping = haveFileUs0;
+                }
+                qCDebug(lcProto) << "replay: resumed at"
+                                 << QDateTime::fromSecsSinceEpoch(resumeAt).time().toString();
+                startFile(current, qMax(resumeAt, files[current].start), false);
+            } else if (current + 1 < files.size()
+                       && files[current + 1].start <= files[current].end + 2) {
+                // Footage goes on in the next file: no gap, so no pause either.
+                qCDebug(lcProto) << "replay: next file" << files[current + 1].name;
+                startFile(current + 1, files[current + 1].start, true);
+            } else if (queued <= 0) {
+                QMutexLocker lock(&q.mutex);
+                if (q.items.isEmpty())
+                    break; // the day's last file has played
+            }
+        }
+
+        Item it;
+        bool have = false;
+        {
+            QMutexLocker lock(&q.mutex);
+            if (!q.items.isEmpty()) {
+                it = q.items.dequeue();
+                have = true;
+                if (!it.audio) {
+                    q.bytes -= it.video.annexB.size();
+                    if (q.items.isEmpty())
+                        q.haveVideo = false;
+                    else
+                        q.headUs = it.video.microseconds;
+                }
+            }
+        }
+        if (!have) {
+            QThread::msleep(20);
+            continue;
+        }
+        if (it.audio) {
+            if (started && m_p.onAudio && m_rate.load() == 1.0)
+                m_p.onAudio(it.sound);
+            continue;
+        }
+        const BcMediaParser::VideoFrame &f = it.video;
+        if (f.codec != BcMediaParser::Codec::Unknown) {
+            QMutexLocker lock(&m_mutex);
+            if (m_format.isEmpty())
+                m_format = (f.codec == BcMediaParser::Codec::H265) ? QStringLiteral("hevc")
+                                                                   : QStringLiteral("h264");
+        }
+        if (!started && !f.keyFrame)
+            continue;
+        started = true;
+        // Pace from the frame timestamps at the chosen speed; a new file, a
+        // seek, a speed change or a pause (the reader stopped) rebases.
+        const double rate = m_rate.load();
+        if (f.microseconds) {
+            const qint64 elapsed = clock.isValid() ? clock.elapsed() : 0;
+            const qint64 targetMs = clock.isValid()
+                ? qint64((qint64(f.microseconds) - qint64(firstMicros)) / 1000 / rate) : 0;
+            if (!clock.isValid() || rate != pacedRate || targetMs < 0
+                || targetMs - elapsed > 10000 || elapsed - targetMs > 1000) {
+                clock.restart();
+                firstMicros = f.microseconds;
+                pacedRate = rate;
+            } else {
+                for (qint64 wait = targetMs - clock.elapsed(); wait > 0 && !m_abort.load();
+                     wait = targetMs - clock.elapsed()) {
+                    QThread::msleep(static_cast<unsigned long>(qMin<qint64>(wait, 50)));
+                    QMutexLocker lock(&m_mutex);
+                    if (m_seekEpoch > 0)
+                        break; // a seek waits for nobody
+                }
+            }
+        }
+        pushAnnexB(f.annexB);
+    }
+    stopFile();
 }
 
 } // namespace rl

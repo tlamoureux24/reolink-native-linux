@@ -2,6 +2,7 @@
 
 #include "core/CredentialStore.h"
 #include "core/Database.h"
+#include "protocol/BaichuanClient.h"
 #include "protocol/ReolinkApi.h"
 // Not forward-declared on purpose — see the note by the other forward
 // declarations below.
@@ -180,14 +181,13 @@ public:
     // the caller's cookie (no snapshotSaved toast). Silent no-op on failure.
     void captureEventThumbnail(qint64 hostId, int channel, qint64 eventId);
 
-    // Playback: search a day's recordings (emits recordingsFound with a list of
-    // {start,end,type,name} where start/end are seconds into the day), and build
-    // a playable URL for a recording file handle.
+    // Playback, over the device's Baichuan session as the official client does:
+    // search a day's recordings (cmd 14/15; emits recordingsFound with a list of
+    // {start,end,type,triggers} where start/end are seconds into the day, then
+    // recordingDaysFound), and the month's days with recordings (cmd 142).
     Q_INVOKABLE void searchRecordings(int row, int year, int month, int day);
     // Calendar dots for a whole month (emits recordingDaysFound only).
     Q_INVOKABLE void searchRecordingDays(int row, int year, int month);
-    // Playable HTTP-FLV URL for a recording starting at startEpoch (Unix seconds).
-    Q_INVOKABLE QString playbackUrl(int row, qint64 startEpoch, bool mainStream = false);
     // Full-resolution (main-stream) playback: download the clip covering
     // [startEpoch, startEpoch+durationSecs] to a local file, then emit hdClipReady
     // with its path (the file is playable/seekable locally, unlike the FLV path).
@@ -324,20 +324,10 @@ private:
         bool talk = false;                          // channel supports two-way audio
         bool isAdmin = false;                       // logged-in user may edit settings
         api::BatteryInfo battery;                   // battery/solar state (if any)
-        // Seconds to add to a wall-clock epoch to get the NVR's playback reference
-        // clock (PlaybackTime − StartTime), learned from the last recording search.
-        // The HTTP-FLV playback endpoint seeks by this reference, not wall-clock.
-        qint64 playbackOffsetSecs = 0;
-        // Recording file boundaries (wall-clock start,end epochs) from the last
-        // search. FLV playback must start on a boundary and use `seek` for the
-        // offset into the file, so a scrub is snapped to the containing file.
-        // Standalone cameras play a file by name instead (playbackFileUrl).
-        struct RecFile {
-            qint64 start = 0;
-            qint64 end = 0;
-            QString name; // empty on NVR firmware
-        };
-        QVector<RecFile> recordingFiles;
+        QString hostUid; // the host's UID (searches fall back to it)
+        // The last searched day's files, per stream (sub draws the timeline).
+        QVector<BcReplayFile> filesSub;
+        QVector<BcReplayFile> filesMain;
         // Persistent authenticated client for the host, shared by its channels.
         std::shared_ptr<ReolinkHttpClient> client;
     };
@@ -365,6 +355,7 @@ private:
         bool isAdmin = false;
         bool talk = false;
         QString password;
+        QString hostUid;
         api::BatteryInfo battery;
         std::shared_ptr<ReolinkHttpClient> client;
         std::shared_ptr<BcSession> session;
@@ -418,13 +409,13 @@ private:
     QHash<qint64, int> m_retryDelaySecs;
     QSet<qint64> m_validating;      // hosts with a validation in flight
 
-    // The in-flight Baichuan playback session, so a scrub can seek it in place.
+    // Each row's running recorded playback, so a scrub can seek it in place.
     // Weak: the StreamPlayer owns the client's lifetime.
-    std::weak_ptr<BaichuanClient> m_playbackClient;
+    QHash<int, std::weak_ptr<BaichuanClient>> m_playbackClients;
     // Running talk sessions, keyed "hostId:channel" (rows can shift).
     QHash<QString, QPointer<class TalkSession>> m_talks;
     QString talkKey(int row) const;
-    int m_playbackRow = -1;
+    std::shared_ptr<BcSession> sessionFor(int row) const; // alive, or null
 };
 
 } // namespace rl

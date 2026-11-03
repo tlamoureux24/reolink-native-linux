@@ -739,7 +739,7 @@ bool runSession(const std::shared_ptr<Session> &s, bool *streamingOut)
             // Pause gate (file sources): hold this frame until resumed, or until
             // stepFrame() releases exactly one. The pacing clock restarts after.
             bool rebase = false;
-            if (!live) {
+            if (!live || s->packetPausable) {
                 while (s->paused.load(std::memory_order_relaxed)
                        && !s->abort.load(std::memory_order_relaxed)) {
                     rebase = true;
@@ -1085,6 +1085,7 @@ void StreamPlayer::setSource(const QString &source)
     m_pendingReader = nullptr; // URL source supersedes any packet source
     detachPacketAudio();
     m_pendingFormat.clear();
+    m_pendingPausable = false;
     m_pendingStop = nullptr;
     m_source = source;
     emit sourceChanged();
@@ -1099,8 +1100,10 @@ void StreamPlayer::setExpectedSize(const QSize &size)
 }
 
 void StreamPlayer::setPacketSource(std::function<int(unsigned char *, int)> reader,
-                                   const QString &format, std::function<void()> onStop)
+                                   const QString &format, std::function<void()> onStop,
+                                   bool pausable)
 {
+    m_pendingPausable = pausable;
     stop();
     m_pendingReader = std::move(reader);
     m_pendingFormat = format;
@@ -1281,6 +1284,7 @@ void StreamPlayer::start()
     s->source = m_source;
     s->readPacket = m_pendingReader;
     s->forcedFormat = m_pendingFormat;
+    s->packetPausable = m_pendingPausable;
     s->expectedSize = m_expectedSize;
     s->loop.store(m_loop);
     s->rate.store(m_rate);

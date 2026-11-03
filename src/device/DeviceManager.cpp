@@ -8,6 +8,7 @@
 #include "protocol/BaichuanClient.h"
 #include "protocol/BaichuanControl.h"
 #include "protocol/BcDevice.h"
+#include "protocol/BcRecordings.h"
 #include "protocol/BcSession.h"
 #include "protocol/ReolinkHttpClient.h"
 
@@ -642,6 +643,7 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         e.mainSize = ch.mainSize;
         e.subSize = ch.subSize;
         e.uid = ch.uid;
+        e.hostUid = v.hostUid;
         e.caps = ch.caps;
         e.talk = ch.caps.talk;
         e.isAdmin = v.isAdmin;
@@ -665,8 +667,8 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         for (int j = 0; j < oldCount; ++j) {
             Entry e = fresh.at(j);
             const Entry &old = m_entries.at(first + j);
-            e.recordingFiles = old.recordingFiles; // learned by the last search
-            e.playbackOffsetSecs = old.playbackOffsetSecs;
+            e.filesSub = old.filesSub; // learned by the last search
+            e.filesMain = old.filesMain;
             m_entries[first + j] = e;
         }
         emit dataChanged(index(first), index(first + oldCount - 1));
@@ -779,6 +781,7 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
         v.model = d.model;
         v.channelNum = d.channelNum;
         v.isAdmin = d.isAdmin;
+        v.hostUid = d.uid;
         v.battery = d.battery;
         // A camera is its channel 0; an NVR shows its online channels.
         for (const bcdev::Channel &c : d.channels) {
@@ -791,6 +794,7 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
             cr.mainSize = c.mainSize;
             cr.subSize = c.subSize;
             cr.caps = c.caps;
+            cr.uid = d.isNvr ? QString() : d.uid; // an NVR camera's own: not known yet
             // The codec is in every frame's header; the stream is probed.
             cr.codec.clear();
             v.talk = v.talk || cr.caps.talk;
@@ -1010,98 +1014,98 @@ void DeviceManager::captureEventThumbnail(qint64 hostId, int channel, qint64 eve
     }));
 }
 
+std::shared_ptr<BcSession> DeviceManager::sessionFor(int row) const
+{
+    if (row < 0 || row >= m_entries.size())
+        return {};
+    const auto s = m_sessions.value(m_entries.at(row).rec.id).session;
+    return s && s->isAlive() ? s : nullptr;
+}
+
 void DeviceManager::searchRecordings(int row, int year, int month, int day)
 {
-    auto client = clientFor(row);
+    const auto session = sessionFor(row);
     const QDate date(year, month, day);
-    if (!client || !date.isValid()) {
+    if (!session || !date.isValid()) {
         emit recordingsFailed(row, tr("device not ready"));
         return;
     }
-    const int ch = m_entries.at(row).channel;
-    const QDateTime start(date, QTime(0, 0, 0));
-    const QDateTime end(date, QTime(23, 59, 59));
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, start, end, date, year, month] {
-        const api::BatchResult batch =
-            client->call(Json::array({api::searchBody(ch, start, end, QStringLiteral("sub"))}));
-        QVariantList segments;
-        QVariantList days;
-        QString error;
-        qint64 playbackOffsetSecs = 0;
-        bool haveOffset = false;
-        QVector<Entry::RecFile> files; // wall-clock epochs + file name
-        if (batch.transportOk && !batch.results.isEmpty() && batch.results.first().ok) {
-            const api::SearchResult sr = api::parseSearch(batch.results.first().value);
-            for (const api::RecordingFile &f : sr.files) {
-                if (!f.start.isValid())
-                    continue;
-                const qint64 dayStart = date.startOfDay().secsTo(f.start);
-                const qint64 dayEnd = date.startOfDay().secsTo(f.end);
-                const qint64 s = qBound(qint64(0), dayStart, qint64(86400));
-                const qint64 e = qBound(s, dayEnd, qint64(86400));
-                QVariantMap seg;
-                seg["start"] = static_cast<double>(s);
-                seg["end"] = static_cast<double>(e);
-                // Anything beyond the schedule is an alarm (blue on the timeline);
-                // NVR firmware names no file, so it stays "timer" as before.
-                seg["type"] = (f.triggers & ~api::trigger::Timer) ? QStringLiteral("alarm")
-                                                                  : QStringLiteral("timer");
-                seg["triggers"] = f.triggers;
-                seg["startEpoch"] = static_cast<double>(f.start.toSecsSinceEpoch());
-                segments.append(seg);
-                files.append({f.start.toSecsSinceEpoch(),
-                              f.end.isValid() ? f.end.toSecsSinceEpoch()
-                                              : f.start.toSecsSinceEpoch() + 3600,
-                              f.name});
-                // Learn the NVR's playback-clock offset from the first valid file:
-                // the FLV endpoint seeks by PlaybackTime, not wall-clock StartTime.
-                if (!haveOffset && f.playbackTime.isValid()) {
-                    playbackOffsetSecs = f.start.secsTo(f.playbackTime);
-                    haveOffset = true;
-                }
-            }
-            for (int d : sr.recordingDays)
-                days.append(d);
-        } else {
-            error = batch.error.isEmpty() ? tr("search failed") : batch.error;
+    const Entry &e = m_entries.at(row);
+    const int ch = e.channel;
+    const QString uid = e.uid.isEmpty() ? e.hostUid : e.uid;
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, uid, row, date, year, month] {
+        auto toFiles = [](const QVector<bcrec::Recording> &recs) {
+            QVector<BcReplayFile> out;
+            for (const bcrec::Recording &r : recs)
+                out.append({r.start.toSecsSinceEpoch(),
+                            r.end.isValid() ? r.end.toSecsSinceEpoch() : r.start.toSecsSinceEpoch() + 60,
+                            r.name, r.id});
+            return out;
+        };
+        // Sub files first: they draw the timeline. Then the month's days, then
+        // the main files for HD.
+        QVector<bcrec::Recording> sub;
+        if (!bcrec::searchDay(*session, ch, uid, date, false, &sub)) {
+            QMetaObject::invokeMethod(
+                this, [this, row] { emit recordingsFailed(row, tr("search failed")); },
+                Qt::QueuedConnection);
+            return;
         }
+        QVariantList segments;
+        for (const bcrec::Recording &f : sub) {
+            const qint64 s = qBound(qint64(0), date.startOfDay().secsTo(f.start), qint64(86400));
+            const qint64 e = qBound(s, date.startOfDay().secsTo(f.end.isValid() ? f.end : f.start),
+                                    qint64(86400));
+            QVariantMap seg;
+            seg["start"] = static_cast<double>(s);
+            seg["end"] = static_cast<double>(e);
+            // Anything beyond the schedule is an alarm (blue on the timeline).
+            seg["type"] = (f.triggers & ~api::trigger::Timer) ? QStringLiteral("alarm")
+                                                              : QStringLiteral("timer");
+            seg["triggers"] = f.triggers;
+            seg["startEpoch"] = static_cast<double>(f.start.toSecsSinceEpoch());
+            segments.append(seg);
+        }
+        QVariantList days;
+        for (int d : bcrec::monthDays(*session, ch, uid, year, month))
+            days.append(d);
+        const QVector<BcReplayFile> subFiles = toFiles(sub);
         QMetaObject::invokeMethod(
             this,
-            [this, row, segments, days, year, month, error, playbackOffsetSecs, haveOffset, files] {
-                // Store the offset + file boundaries BEFORE emitting recordingsFound
-                // so a QML handler that immediately calls playbackUrl() sees them.
-                if (row >= 0 && row < m_entries.size()) {
-                    if (haveOffset)
-                        m_entries[row].playbackOffsetSecs = playbackOffsetSecs;
-                    m_entries[row].recordingFiles = files;
-                }
-                if (error.isEmpty()) {
-                    emit recordingsFound(row, segments);
-                    emit recordingDaysFound(row, year, month, days);
-                } else {
-                    emit recordingsFailed(row, error);
-                }
+            [this, row, segments, days, year, month, subFiles] {
+                // Store the files BEFORE emitting, so a handler that plays at
+                // once finds them.
+                if (row >= 0 && row < m_entries.size())
+                    m_entries[row].filesSub = subFiles;
+                emit recordingsFound(row, segments);
+                emit recordingDaysFound(row, year, month, days);
             },
             Qt::QueuedConnection);
+        QVector<bcrec::Recording> main;
+        if (bcrec::searchDay(*session, ch, uid, date, true, &main)) {
+            const QVector<BcReplayFile> mainFiles = toFiles(main);
+            QMetaObject::invokeMethod(
+                this,
+                [this, row, mainFiles] {
+                    if (row >= 0 && row < m_entries.size())
+                        m_entries[row].filesMain = mainFiles;
+                },
+                Qt::QueuedConnection);
+        }
     }));
 }
 
 void DeviceManager::searchRecordingDays(int row, int year, int month)
 {
-    auto client = clientFor(row);
-    const QDate first(year, month, 1);
-    if (!client || !first.isValid())
+    const auto session = sessionFor(row);
+    if (!session || !QDate(year, month, 1).isValid())
         return;
-    const int ch = m_entries.at(row).channel;
-    const QDateTime start(first, QTime(0, 0, 0));
-    const QDateTime end(first.addDays(first.daysInMonth() - 1), QTime(23, 59, 59));
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, start, end, year, month] {
-        const api::BatchResult batch = client->call(
-            Json::array({api::searchBody(ch, start, end, QStringLiteral("sub"), true)}));
-        if (!batch.transportOk || batch.results.isEmpty() || !batch.results.first().ok)
-            return; // dots are a hint; the day search reports real errors
+    const Entry &e = m_entries.at(row);
+    const int ch = e.channel;
+    const QString uid = e.uid.isEmpty() ? e.hostUid : e.uid;
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, uid, row, year, month] {
         QVariantList days;
-        for (int d : api::parseSearch(batch.results.first().value).recordingDays)
+        for (int d : bcrec::monthDays(*session, ch, uid, year, month))
             days.append(d);
         QMetaObject::invokeMethod(
             this, [this, row, year, month, days] { emit recordingDaysFound(row, year, month, days); },
@@ -1117,48 +1121,6 @@ QSize DeviceManager::declaredSize(int row, bool mainStream) const
     return mainStream ? e.mainSize : e.subSize;
 }
 
-QString DeviceManager::playbackUrl(int row, qint64 startEpoch, bool mainStream)
-{
-    if (row < 0 || row >= m_entries.size() || startEpoch <= 0)
-        return {};
-    const Entry &e = m_entries.at(row);
-    if (e.rec.kind == QLatin1String("stream") || !e.primed)
-        return {};
-    // The FLV endpoint only accepts a start on a recording-file boundary and uses
-    // `seek` for the offset into that file — a mid-file start time is rejected. Snap
-    // to the file containing startEpoch (or the nearest earlier one for a gap).
-    qint64 fileStart = -1;
-    qint64 fileEnd = 0;
-    QString fileName;
-    for (const auto &f : e.recordingFiles) {
-        if (startEpoch >= f.start && startEpoch <= f.end) {
-            fileStart = f.start;
-            fileEnd = f.end;
-            fileName = f.name;
-            break;
-        }
-        if (f.start <= startEpoch && f.start > fileStart) { // nearest earlier start
-            fileStart = f.start;
-            fileEnd = f.end;
-            fileName = f.name;
-        }
-    }
-    if (fileStart < 0)
-        return {}; // no recording covers this moment
-    const int seekSecs = static_cast<int>(qBound<qint64>(0, startEpoch - fileStart,
-                                                         qMax<qint64>(0, fileEnd - fileStart)));
-    // `start` is the file's PlaybackTime (its wall-clock start + the device's UTC
-    // offset), which the NVR requires as a boundary.
-    const QDateTime start = QDateTime::fromSecsSinceEpoch(fileStart + e.playbackOffsetSecs);
-    // Reuse the app's existing session token so the NVR doesn't reject a second
-    // login for the playback stream. Falls back to user/password if no token yet.
-    const QString token = e.client ? e.client->token() : QString();
-    if (api::playsByFileName(e.rec.kind, fileName))
-        return api::playbackFileUrl(e.rec.addr, e.rec.https, fileName, e.rec.username,
-                                    e.password, token, seekSecs);
-    return api::playbackFlvUrl(e.rec.addr, e.rec.port, e.rec.https, e.channel, mainStream, start,
-                               e.rec.username, e.password, token, seekSecs);
-}
 
 void DeviceManager::requestHdClip(int row, qint64 startEpoch, int durationSecs)
 {
@@ -1356,19 +1318,34 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     p.username = e.rec.username;
     p.password = e.password;
     p.channel = e.channel;
-    p.uid = e.uid;
+    p.uid = e.uid.isEmpty() ? e.hostUid : e.uid;
     p.mainStream = mainStream;
-    p.startEpoch = startEpoch; // <= 0 = live (cmd 3 Preview), else by-time playback
+    p.startEpoch = startEpoch; // <= 0 = live (cmd 3 Preview), else recorded playback
+    if (startEpoch > 0) {
+        // The searched day's files of this stream (the other one if missing).
+        const bool useMain = mainStream ? !e.filesMain.isEmpty() : e.filesSub.isEmpty();
+        p.replayFiles = useMain ? e.filesMain : e.filesSub;
+        p.mainStream = mainStream = useMain;
+    }
     // The stream's sound plays through the player.
     auto audio = player->packetAudioInput();
     p.onAudio = [audio](const BcMediaParser::AudioFrame &a) { audio(a.data, a.aac); };
 
     auto client = std::make_shared<BaichuanClient>(p);
-    client->start();
     if (startEpoch > 0) {
-        m_playbackClient = client; // weak — for in-place seek; StreamPlayer owns lifetime
-        m_playbackRow = row;
+        m_playbackClients.insert(row, client); // weak — for in-place seek
+        // The client paces recordings, at the player's speed.
+        client->setRate(player->playbackRate());
+        delete player->findChild<QObject *>(QStringLiteral("rl_bcRate"));
+        auto *ctx = new QObject(player);
+        ctx->setObjectName(QStringLiteral("rl_bcRate"));
+        const std::weak_ptr<BaichuanClient> weak = client;
+        connect(player, &StreamPlayer::playbackRateChanged, ctx, [player, weak] {
+            if (const auto c = weak.lock())
+                c->setRate(player->playbackRate());
+        });
     }
+    client->start();
     // The sub stream is always H.264; the main stream's codec is per-channel.
     // An UNKNOWN main codec (firmware omitted/mangled GetEnc vType — issue #4)
     // passes an empty format so avformat probes the stream instead: forcing
@@ -1383,7 +1360,8 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     player->setPacketSource(
         [client](unsigned char *buf, int size) { return client->read(buf, size); },
         format,
-        [client] { client->stop(); });
+        [client] { client->stop(); },
+        /*pausable=*/startEpoch > 0);
     player->start();
 }
 
@@ -1402,9 +1380,7 @@ void DeviceManager::startBaichuanLive(int row, StreamPlayer *player, bool mainSt
 
 bool DeviceManager::seekBaichuanPlayback(int row, qint64 startEpoch)
 {
-    if (row != m_playbackRow)
-        return false;
-    auto client = m_playbackClient.lock();
+    const auto client = m_playbackClients.value(row).lock();
     return client && client->seek(startEpoch);
 }
 

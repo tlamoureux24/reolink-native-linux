@@ -99,6 +99,23 @@ device are now updated in place: they used to be removed and re-inserted,
 which shifted every pane to another camera for a moment and briefly opened
 main streams at start-up.
 
+**Step 3 — done, validated by the user (2026-11-03).** Calendar days (cmd 142)
+and a day's files per stream (cmd 14 → `handle`, cmd 15 pages, cmd 16 close)
+come from the device's session; playback goes file by file in it, as the
+official replayer: cmd 5 with the file's `Id`, cmd 123 `ReplaySeek` to seek
+inside it, cmd 7 to stop, then the next file when it follows on without a gap.
+A camera sends a file as fast as it can — about 10× real time on the LAN, up to
+~53 Mbit/s for a main file — and the SDK's `<playSpeed>` (cmd 5 FileInfo,
+seen in `BaichuanReplayer`) did not slow an RLC-811A down, nor is cmd 185
+`PAUSE_REPLAY` sent by the SDK. So the client queues what arrives and plays it
+at the chosen speed (0.5×–8×, pause, frame step), and bounds the queue with
+the official commands only: past 20 s of video the file is stopped (cmd 7);
+below 5 s it is asked again from where the queue ends (cmd 5 + 123) and the
+frames already queued are skipped by timestamp. Measured: sub at 1× ≈ 0.22
+Mbit/s (the 256 kbit/s stream), main at 1× ≈ 6.9 Mbit/s. HTTP-FLV, the
+camera MP4 URL and the old cmd 143 playback on its own connection are gone
+(143 is `DOWNLOAD_CUT`, the clip download).
+
 ## Risks
 
 - **NVR:** the user has none at the moment, so NVR paths are written from the

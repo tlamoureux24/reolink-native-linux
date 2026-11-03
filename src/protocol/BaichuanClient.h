@@ -5,28 +5,33 @@
 #include <QByteArray>
 #include <QMutex>
 #include <QString>
+#include <QVector>
 #include <QWaitCondition>
 
 #include <atomic>
 #include <functional>
 #include <thread>
 
-class QTcpSocket;
-
-// Native Reolink "Baichuan" (BC, TCP 9000) client — the transport the official
-// apps use, and the only one that streams the HEVC main stream in real time for
-// both live and recorded playback (HTTP-FLV is H.264-only on NVR firmware and the
-// cmd=Download endpoint is throttled below realtime).
+// One live or recorded stream of a Reolink device, inside the device's
+// Baichuan session (BcSession), the way the official client streams: live
+// with cmd 3 / cmd 4 (BaichuanPreviewer), recordings file by file with cmd 5,
+// cmd 123 (seek) and cmd 7 (stop) (BaichuanReplayer).
 //
-// Runs its network loop on a detached worker thread and exposes a blocking read()
-// that yields a raw H.264/H.265 Annex-B elementary stream, designed to back a
-// libavformat AVIOContext so StreamPlayer's existing decode path is reused as-is.
+// Runs on its own thread and exposes a blocking read() that yields a raw
+// H.264/H.265 Annex-B elementary stream, designed to back a libavformat
+// AVIOContext so StreamPlayer's decode path is reused as-is.
 //
-// Clean-room: framing/crypto from the documented wire format + MIT reolink_aio /
-// reolink-aio-ts; the recorded-playback command flow (search cmd 14 -> list cmd 15
-// -> replay cmd 5, with cmd 93 keep-alive) reverse-engineered against an RLN8-410.
-// No AGPL neolink code.
+// Clean-room: wire format from the official SDK's behaviour and MIT
+// reolink_aio; no AGPL neolink code.
 namespace rl {
+
+// A recording file, as the device's file search (cmd 14/15) lists it.
+struct BcReplayFile {
+    qint64 start = 0; // epoch
+    qint64 end = 0;
+    QString name;
+    QString id; // the file's path on the device
+};
 
 class BaichuanClient
 {
@@ -37,9 +42,11 @@ public:
         QString username;
         QString password;
         int channel = 0;
-        QString uid;                    // camera UID (from GetChannelstatus)
+        QString uid;                    // camera UID (recordings are searched by it)
         bool mainStream = true;
         qint64 startEpoch = 0;          // 0 => live preview; else recorded playback from here
+        // Recorded playback: the day's files of this stream, played one by one.
+        QVector<BcReplayFile> replayFiles;
         // The stream's audio frames, called on the worker thread (optional).
         std::function<void(const BcMediaParser::AudioFrame &)> onAudio;
     };
@@ -53,10 +60,12 @@ public:
     // caller thread.
     void stop();
 
-    // Seek an active recorded-playback session to a new instant, in place (reissues
-    // the by-time command on the same connection — no reconnect/re-login). Returns
-    // false if the session has already ended (caller should start a fresh one).
+    // Seek an active recorded playback to a new instant, in place (no new
+    // stream). Returns false if it has already ended (start a fresh one).
     bool seek(qint64 startEpoch);
+    // Recorded playback speed (0.125–16): the device sends a file faster than
+    // real time, and this client paces it.
+    void setRate(double rate);
 
     // Blocking read of decoded Annex-B bytes (for an AVIOContext read callback).
     // Returns the number of bytes written, 0 on clean end, or <0 on abort/error.
@@ -70,15 +79,13 @@ private:
     // Live view inside the device's session (cmd 3 / cmd 4), shared with every
     // other client watching the same channel and stream.
     void runSessionLive();
+    // Recorded playback inside the device's session, file by file.
+    void runSessionReplay();
     // A frame of that shared stream (session worker).
     void deliverShared(const BcMediaParser::VideoFrame &f);
     void deliverSharedAudio(const BcMediaParser::AudioFrame &a);
-    bool connectAndLogin(QTcpSocket &sock, QByteArray &aesKey);
-    bool startStream(QTcpSocket &sock, const QByteArray &aesKey);
-    void sendPlayback(QTcpSocket &sock, const QByteArray &aesKey, qint64 startEpoch);
-    void pumpMedia(QTcpSocket &sock, const QByteArray &aesKey, quint16 streamMsgNum);
-    // `block`: wait for the reader when far behind (own connection); a shared
-    // session's worker must not wait, so it drops instead.
+    // `block`: wait for the reader when far behind (playback, its own thread);
+    // a shared session's worker must not wait, so it drops instead.
     void pushAnnexB(const QByteArray &bytes, bool block = true);
 
     Params m_p;
@@ -93,8 +100,7 @@ private:
     QString m_format;         // "h264"/"hevc", guarded by m_mutex
     bool m_started = false;
     bool m_sharedKeyFrame = false; // a key frame reached us on the shared stream
-    QByteArray m_loginTail;   // socket bytes buffered past the login reply
-    QByteArray m_streamTail;  // socket bytes buffered past the stream-start reply
+    std::atomic<double> m_rate{1.0}; // recorded playback speed
 };
 
 } // namespace rl

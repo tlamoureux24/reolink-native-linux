@@ -459,53 +459,6 @@ int recordingTriggers(const QString &fileName)
     return t;
 }
 
-QString playbackFlvUrl(const QString &host, int port, bool https, int channel, bool mainStream,
-                       const QDateTime &start, const QString &username, const QString &password,
-                       const QString &token, int seekSecs)
-{
-    Q_UNUSED(port); // the flv endpoint is on the web port; app=bcs handles routing
-    const QString scheme = https ? QStringLiteral("https") : QStringLiteral("http");
-    const QString ts = start.toString(QStringLiteral("yyyyMMddHHmmss"));
-    // The official web client maps stream -> wire `type` via EnumRTMPStreamType:
-    // main (CLEAR) => 0, sub (FLUENT) => 1. (Our earlier 1/0 was inverted.)
-    QString base = QStringLiteral("%1://%2/flv?port=1935&app=bcs&stream=playback.bcs&channel=%3"
-                                  "&type=%4&start=%5&seek=%6")
-                       .arg(scheme, hostForUrl(host))
-                       .arg(channel)
-                       .arg(mainStream ? 0 : 1)
-                       .arg(ts)
-                       .arg(seekSecs);
-    if (!token.isEmpty())
-        return base + QStringLiteral("&token=") +
-               QString::fromUtf8(QUrl::toPercentEncoding(token));
-    return base + QStringLiteral("&user=%1&password=%2")
-                      .arg(QString::fromUtf8(QUrl::toPercentEncoding(username)),
-                           QString::fromUtf8(QUrl::toPercentEncoding(password)));
-}
-
-QString playbackFileUrl(const QString &host, bool https, const QString &fileName,
-                        const QString &username, const QString &password,
-                        const QString &token, int seekSecs)
-{
-    const QString scheme = https ? QStringLiteral("https") : QStringLiteral("http");
-    const QString name = QString::fromUtf8(QUrl::toPercentEncoding(fileName));
-    QString url = QStringLiteral("%1://%2/cgi-bin/api.cgi?cmd=Playback&source=%3&output=%3")
-                      .arg(scheme, hostForUrl(host), name);
-    if (!token.isEmpty())
-        url += QStringLiteral("&token=") + QString::fromUtf8(QUrl::toPercentEncoding(token));
-    else
-        url += QStringLiteral("&user=%1&password=%2")
-                   .arg(QString::fromUtf8(QUrl::toPercentEncoding(username)),
-                        QString::fromUtf8(QUrl::toPercentEncoding(password)));
-    if (seekSecs > 0)
-        url += QStringLiteral("#t=%1").arg(seekSecs);
-    return url;
-}
-
-bool playsByFileName(const QString &hostKind, const QString &fileName)
-{
-    return hostKind != QLatin1String("nvr") && !fileName.isEmpty();
-}
 
 Json nvrDownloadBody(int channel, const QDateTime &start, const QDateTime &end,
                      const QString &streamType)

@@ -77,6 +77,7 @@ public:
         // forcedFormat is the libavformat demuxer name ("h264"/"hevc").
         std::function<int(unsigned char *, int)> readPacket;
         QString forcedFormat;
+        bool packetPausable = false;
 
         // Retry on connection error even for non-live sources (playback FLV on a
         // connection-limited NVR often needs a couple of attempts).
@@ -113,8 +114,10 @@ public:
     // to end); `format` is the demuxer ("h264"/"hevc"); `onStop` is invoked on
     // stop()/destruction to unblock and tear down the source. Set before start();
     // cleared by setSource(). Not a QML API.
+    // `pausable`: a recording the reader paces itself — paused/stepFrame hold
+    // and release frames as for a file (a live source is never held).
     void setPacketSource(std::function<int(unsigned char *, int)> reader, const QString &format,
-                         std::function<void()> onStop);
+                         std::function<void()> onStop, bool pausable = false);
     // The packet source's audio: the returned function takes its audio frames
     // (AAC, or a Reolink IMA-ADPCM block) on any thread and plays them the way a
     // URL stream's audio plays (hasAudio, audioEnabled, volume). Get it before
@@ -190,6 +193,7 @@ private:
     QSize m_expectedSize;
     std::function<int(unsigned char *, int)> m_pendingReader;
     QString m_pendingFormat;
+    bool m_pendingPausable = false;
     std::function<void()> m_pendingStop; // teardown for the not-yet-started source
     std::function<void()> m_activeStop;  // teardown for the running session's source
     bool m_loop = false;

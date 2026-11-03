@@ -1,5 +1,7 @@
 #include "media/BcMediaParser.h"
 #include "protocol/BcCrypto.h"
+#include "protocol/BcDevice.h"
+#include "protocol/BcRecordings.h"
 #include "protocol/ReolinkApi.h"
 
 #include "media/ImaAdpcm.h"
@@ -23,6 +25,73 @@ class TestProtocol : public QObject
     Q_OBJECT
 
 private slots:
+    void bcRecordings()
+    {
+        // Trimmed cmd 142 / cmd 15 replies of an RLC-823A.
+        const QByteArray days =
+            "<DayRecords version=\"1.1\"><DayRecordList><DayRecord><index>0</index><channelId>0</channelId>"
+            "<dayTypeList><dayType><index>0</index><type>normal</type></dayType>"
+            "<dayType><index>1</index><type>normal</type></dayType></dayTypeList></DayRecord></DayRecordList></DayRecords>";
+        QCOMPARE(bcrec::parseRecordDays(days), (QVector<int>{1, 2}));
+        QVERIFY(bcrec::parseRecordDays("<DayRecords><dayTypeList /></DayRecords>").isEmpty());
+
+        const QByteArray page =
+            "<FileInfoList version=\"1.1\"><FileInfo><channelId>0</channelId><handle>3</handle>"
+            "<name>0120261102072209</name><Id>/mnt/sda/Mp4Record/2026-11-02/RecS02_20261102_072209_072239_1_2.mp4</Id>"
+            "<streamType>subStream</streamType><recordType>people</recordType>"
+            "<startTime><year>2026</year><month>11</month><day>2</day><hour>7</hour><minute>22</minute><second>9</second></startTime>"
+            "<endTime><year>2026</year><month>11</month><day>2</day><hour>7</hour><minute>22</minute><second>39</second></endTime>"
+            "</FileInfo><FileInfo><name>x</name><Id>/y.mp4</Id><recordType>md, sched</recordType>"
+            "<startTime><year>2026</year><month>11</month><day>2</day><hour>8</hour><minute>0</minute><second>0</second></startTime>"
+            "<endTime><year>2026</year><month>11</month><day>2</day><hour>8</hour><minute>5</minute><second>0</second></endTime>"
+            "</FileInfo></FileInfoList>";
+        const QVector<bcrec::Recording> files = bcrec::parseFileList(page);
+        QCOMPARE(files.size(), 2);
+        QCOMPARE(files[0].name, QStringLiteral("0120261102072209"));
+        QVERIFY(files[0].id.endsWith(QLatin1String("RecS02_20261102_072209_072239_1_2.mp4")));
+        QCOMPARE(files[0].start, QDateTime(QDate(2026, 11, 2), QTime(7, 22, 9)));
+        QCOMPARE(files[0].end, QDateTime(QDate(2026, 11, 2), QTime(7, 22, 39)));
+        QCOMPARE(files[0].triggers, int(api::trigger::Person));
+        QCOMPARE(files[1].triggers, int(api::trigger::Motion | api::trigger::Timer));
+        QVERIFY(bcrec::parseFileList("<FileInfoList></FileInfoList>").isEmpty());
+    }
+
+    void bcDeviceSupport()
+    {
+        // cmd 199 <item> values of an RLC-823A (pan/tilt) and an RLC-811A
+        // (zoom/focus only), as the cameras sent them.
+        const QByteArray ptz =
+            "<body><Support version=\"1.1\"><channelNum>1</channelNum><audioNum>1</audioNum>"
+            "<audioTalk>1</audioTalk><smartHome><item><name>googleHome</name></item></smartHome>"
+            "<item><chnID>0</chnID><ptzType>2</ptzType><noAudio>0</noAudio><autoFocus>1</autoFocus>"
+            "<battery>0</battery><audioVersion>31</audioVersion><ledCtrl>38</ledCtrl>"
+            "<ptzControl>229</ptzControl><ptzPreset>3</ptzPreset><ptzPatrol>1</ptzPatrol>"
+            "<aitype>30647</aitype></item></Support></body>";
+        const api::ChannelCaps p = bcdev::parseSupport(ptz, 1, false).value(0);
+        QVERIFY(p.ptz && p.panTilt && p.ptzPreset && p.ptzPatrol && p.ptzGuard && p.ptzSpeed);
+        QVERIFY(p.zoom && p.focus && p.zoomFocusPos && p.autoFocus && p.autoTrack);
+        QVERIFY(p.ai && p.aiPeople && p.aiVehicle && p.aiDogCat);
+        QVERIFY(p.audio && p.talk && p.siren && p.floodlight && !p.battery);
+
+        const QByteArray cam =
+            "<body><Support version=\"1.1\"><channelNum>1</channelNum><audioNum>1</audioNum>"
+            "<audioTalk>1</audioTalk><item><chnID>0</chnID><ptzType>1</ptzType><noAudio>0</noAudio>"
+            "<autoFocus>1</autoFocus><audioVersion>31</audioVersion><ledCtrl>38</ledCtrl>"
+            "<ptzControl>1</ptzControl><ptzPreset>0</ptzPreset><aitype>1847</aitype></item></Support></body>";
+        const api::ChannelCaps c = bcdev::parseSupport(cam, 1, false).value(0);
+        QVERIFY(c.ptz && !c.panTilt && !c.ptzPreset && !c.ptzGuard && c.zoom && c.zoomFocusPos);
+        QVERIFY(!c.autoTrack && c.aiPeople && c.floodlight);
+
+        bcdev::Device d;
+        bcdev::parseLoginInfo("<body><DeviceInfo><type>nvr</type><channelNum>8</channelNum></DeviceInfo></body>", d);
+        QVERIFY(d.isNvr);
+        QCOMPARE(d.channelNum, 8);
+        QVERIFY(bcdev::parseIsAdmin("<AbilityInfo><system><subModule><abilityValue>general_rw, "
+                                    "reboot_rw</abilityValue></subModule></system></AbilityInfo>"));
+        QVERIFY(!bcdev::parseIsAdmin("<AbilityInfo><system><subModule><abilityValue>general_ro"
+                                     "</abilityValue></subModule></system></AbilityInfo>"));
+    }
+
     void loginBodyShape()
     {
         const Json body = api::loginBody(QStringLiteral("admin"), QStringLiteral("pw123"));
@@ -341,20 +410,6 @@ private slots:
         QCOMPARE(sr.recordingDays, QVector<int>({6, 7, 8, 9}));
     }
 
-    void playbackFlvUrlFormat()
-    {
-        const QDateTime start(QDate(2026, 7, 9), QTime(0, 0, 0));
-        const QString url = api::playbackFlvUrl(QStringLiteral("10.0.0.5"), 443, true,
-                                                0, /*mainStream=*/true, start,
-                                                QStringLiteral("admin"), QStringLiteral("pw"));
-        QVERIFY(url.startsWith(
-            QStringLiteral("https://10.0.0.5/flv?port=1935&app=bcs&stream=playback.bcs")));
-        QVERIFY(url.contains(QStringLiteral("channel=0")));
-        QVERIFY(url.contains(QStringLiteral("type=0")));           // main = type 0 (EnumRTMPStreamType[CLEAR])
-        QVERIFY(url.contains(QStringLiteral("start=20260709000000")));
-        QVERIFY(url.contains(QStringLiteral("user=admin")));
-    }
-
     void searchBodyOnlyStatus()
     {
         const QDateTime start(QDate(2026, 10, 1), QTime(0, 0, 0));
@@ -488,35 +543,6 @@ private slots:
         bool none = true;
         BaichuanControl::parseTalkAbility("<body/>", &none);
         QVERIFY(!none);
-    }
-
-    void playbackTransportChoice()
-    {
-        const QString name = QStringLiteral("Mp4Record/2026-11-01/RecS02_x.mp4");
-        // NVRs always stay on HTTP-FLV, even if a firmware ever returns names.
-        QVERIFY(!api::playsByFileName(QStringLiteral("nvr"), name));
-        QVERIFY(!api::playsByFileName(QStringLiteral("nvr"), QString()));
-        // Standalone cameras play the file, but only when they named it.
-        QVERIFY(api::playsByFileName(QStringLiteral("camera"), name));
-        QVERIFY(!api::playsByFileName(QStringLiteral("camera"), QString()));
-    }
-
-    void playbackFileUrlFormat()
-    {
-        const QString name = QStringLiteral("Mp4Record/2026-11-01/RecS02_x.mp4");
-        const QString enc = QStringLiteral("Mp4Record%2F2026-11-01%2FRecS02_x.mp4");
-        const QString url = api::playbackFileUrl(QStringLiteral("10.0.0.6"), true, name,
-                                                 QStringLiteral("admin"), QStringLiteral("p#t=1&x"),
-                                                 QStringLiteral("tok"), 42);
-        QCOMPARE(url, QStringLiteral("https://10.0.0.6/cgi-bin/api.cgi?cmd=Playback&source=%1"
-                                     "&output=%1&token=tok#t=42").arg(enc));
-        // No token: credentials are percent-encoded, so a password can never
-        // forge the #t= fragment StreamPlayer looks for.
-        const QString noTok = api::playbackFileUrl(QStringLiteral("10.0.0.6"), false, name,
-                                                   QStringLiteral("admin"), QStringLiteral("p#t=1&x"));
-        QVERIFY(noTok.startsWith(QStringLiteral("http://10.0.0.6/cgi-bin/api.cgi?cmd=Playback")));
-        QVERIFY(noTok.endsWith(QStringLiteral("&user=admin&password=p%23t%3D1%26x")));
-        QVERIFY(!noTok.contains(QLatin1Char('#')));
     }
 
     void nvrDownloadRoundTrip()
