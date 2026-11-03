@@ -22,6 +22,8 @@
 //   cmd 252/253  <BatteryInfo>  battery state (battery cameras)
 //   cmd 145      <ChannelInfoList> pushed by an NVR: its channels' states
 //   cmd 44       <OsdChannelName> per channel: the camera's name
+//   cmd 33       <AlarmEventList> pushed detections (after cmd 31)
+//   cmd 109      <Snap>         a JPEG snapshot
 //
 // Capability bits follow reolink_aio (MIT), which reads the same <Support>
 // reply: see docs/research/baichuan-map.md.
@@ -70,6 +72,15 @@ api::BatteryInfo parseBattery(const QByteArray &xml);
 // <ChannelInfoList> → channel → online.
 QVector<QPair<int, bool>> parseChannelStates(const QByteArray &xml);
 QString parseChannelName(const QByteArray &xml);
+
+// cmd 33 <AlarmEventList>, pushed after a subscription (cmd 31 on channel byte
+// 251): each channel's detection state (status MD = motion, AItype people /
+// vehicle / dog_cat).
+QVector<QPair<int, api::DetectionState>> parseAlarmEvents(const QByteArray &xml);
+
+// A JPEG of the channel (cmd 109 <Snap>): the reply announces <pictureSize>,
+// the image follows in the payload of one or more messages. Empty on failure.
+QByteArray snapshot(BcSession &s, int channel, bool mainStream, QString *error = nullptr);
 
 // Read everything above through an open session. Blocking; false when the
 // device stopped answering (the session's error() then says why).

@@ -39,10 +39,6 @@ public:
     // Convenience for a single command; returns the lone CommandResult.
     api::CommandResult callOne(const QString &cmd, Json param = Json::object(), int action = 0);
 
-    // Fetch a JPEG snapshot of a channel (cmd=Snap, binary GET). Returns empty on
-    // failure with *error set.
-    QByteArray fetchSnapshot(int channel, QString *error = nullptr);
-
     // Stream an authenticated GET straight to a file (e.g. a recording clip via
     // cmd=Download). Streams to disk rather than buffering, so it handles the large
     // clips the endpoint produces. Returns false with *error set on failure (and

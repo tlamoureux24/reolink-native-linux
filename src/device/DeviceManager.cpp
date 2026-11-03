@@ -112,6 +112,8 @@ void DeviceManager::applyChannelStates(qint64 hostId, const QHash<int, bool> &ch
 void DeviceManager::dropSession(qint64 hostId)
 {
     const HostSession hs = m_sessions.take(hostId);
+    if (hs.session && hs.alarmId)
+        hs.session->unroute(hs.alarmId);
     if (hs.session && hs.pushToken)
         hs.session->removePushHandler(hs.pushToken);
 }
@@ -157,8 +159,8 @@ void DeviceManager::pollDetections()
 
     // Recovery probes ride the poll tick: hosts that failed with a TRANSPORT
     // problem revalidate when their backoff expires, so an NVR that was off at
-    // app launch appears by itself once it's back — previously a host with no
-    // client was skipped by everything and stayed "connecting…" until restart.
+    // app launch appears by itself once it's back. (Detections are not polled:
+    // each device pushes them on its session, see applyValidation.)
     const QDateTime now = QDateTime::currentDateTimeUtc();
     for (auto it = m_nextRetryAt.begin(); it != m_nextRetryAt.end();) {
         if (it.value() <= now) {
@@ -169,108 +171,28 @@ void DeviceManager::pollDetections()
             ++it;
         }
     }
+}
 
-    // Poll each HOST with a SINGLE batched request covering all its online
-    // channels — Reolink NVRs are connection-limited, so opening one connection
-    // per channel (5+ at once) starves live/playback streams. One connection per
-    // host per cycle keeps capacity free.
-    struct HostPoll {
-        std::shared_ptr<ReolinkHttpClient> client;
-        QVector<int> channels;
-        QVector<bool> wantAi;
-        QVector<QString> names;
+void DeviceManager::applyDetection(qint64 hostId, int channel, const api::DetectionState &st)
+{
+    const int row = rowOfHostChannel(hostId, channel);
+    if (row < 0 || m_entries.at(row).channel != channel)
+        return;
+    const QString camera = m_entries.at(row).chanName;
+    const QString ckey = detKey(hostId, channel);
+    const api::DetectionState prev = m_lastDetection.value(ckey);
+    auto edge = [&](bool isOn, bool was, const char *type) {
+        if (isOn && !was)
+            emit detectionEvent(hostId, channel, QString::fromUtf8(type), camera);
     };
-    QHash<qint64, HostPoll> byHost;
-    QVector<qint64> order;
-    for (const Entry &e : m_entries) {
-        // Offline entries stay in the poll: that's how we notice recovery.
-        if (e.rec.kind == QLatin1String("stream") || !e.client)
-            continue;
-        if (!byHost.contains(e.rec.id)) {
-            byHost[e.rec.id] = HostPoll{e.client, {}, {}, {}};
-            order.append(e.rec.id);
-        }
-        HostPoll &hp = byHost[e.rec.id];
-        hp.channels.append(e.channel);
-        hp.wantAi.append(e.caps.ai);
-        hp.names.append(e.chanName);
-    }
-
-    for (qint64 hostId : order) {
-        const QString key = QString::number(hostId);
-        if (m_pollInFlight.value(key, false))
-            continue;
-        m_pollInFlight[key] = true;
-        const HostPoll hp = byHost.value(hostId);
-
-        m_pending.addFuture(QtConcurrent::run([this, hostId, key, hp] {
-            // Build one ordered batch; remember what each entry maps to.
-            struct Item { int channel; bool isAi; };
-            QVector<Item> items;
-            Json cmds = Json::array();
-            for (int i = 0; i < hp.channels.size(); ++i) {
-                const int ch = hp.channels[i];
-                items.append({ch, false});
-                cmds.push_back(api::command(QStringLiteral("GetMdState"), Json{{"channel", ch}}));
-                if (hp.wantAi[i]) {
-                    items.append({ch, true});
-                    cmds.push_back(
-                        api::command(QStringLiteral("GetAiState"), Json{{"channel", ch}}));
-                }
-            }
-            // Online state comes from the host's Baichuan session, not from here.
-            const api::BatchResult batch = hp.client->call(cmds);
-
-            // Combine per-channel md/ai (results preserve request order).
-            QHash<int, api::DetectionState> states;
-            if (batch.transportOk) {
-                for (int i = 0; i < batch.results.size() && i < items.size(); ++i) {
-                    const api::CommandResult &r = batch.results[i];
-                    if (!r.ok)
-                        continue;
-                    api::DetectionState &st = states[items[i].channel];
-                    if (items[i].isAi) {
-                        const api::DetectionState ai = api::parseAiState(r.value);
-                        st.person = ai.person;
-                        st.vehicle = ai.vehicle;
-                        st.pet = ai.pet;
-                    } else {
-                        st.motion = api::parseMdState(r.value);
-                    }
-                }
-            }
-
-            const bool transportOk = batch.transportOk;
-            QMetaObject::invokeMethod(
-                this,
-                [this, hostId, key, hp, states, transportOk] {
-                    m_pollInFlight[key] = false;
-                    if (!transportOk)
-                        return;
-                    for (int i = 0; i < hp.channels.size(); ++i) {
-                        const int channel = hp.channels[i];
-                        const QString ckey = detKey(hostId, channel);
-                        const api::DetectionState st = states.value(channel);
-                        const api::DetectionState prev = m_lastDetection.value(ckey);
-                        const QString camera = hp.names[i];
-                        auto edge = [&](bool now, bool was, const char *type) {
-                            if (now && !was)
-                                emit detectionEvent(hostId, channel, QString::fromUtf8(type),
-                                                    camera);
-                        };
-                        edge(st.person, prev.person, "person");
-                        edge(st.vehicle, prev.vehicle, "vehicle");
-                        edge(st.pet, prev.pet, "pet");
-                        const bool aiActive = st.person || st.vehicle || st.pet;
-                        const bool prevAi = prev.person || prev.vehicle || prev.pet;
-                        if (!aiActive)
-                            edge(st.motion, prev.motion || prevAi, "motion");
-                        m_lastDetection[ckey] = st;
-                    }
-                },
-                Qt::QueuedConnection);
-        }));
-    }
+    edge(st.person, prev.person, "person");
+    edge(st.vehicle, prev.vehicle, "vehicle");
+    edge(st.pet, prev.pet, "pet");
+    const bool aiActive = st.person || st.vehicle || st.pet;
+    const bool prevAi = prev.person || prev.vehicle || prev.pet;
+    if (!aiActive)
+        edge(st.motion, prev.motion || prevAi, "motion");
+    m_lastDetection[ckey] = st;
 }
 
 int DeviceManager::rowCount(const QModelIndex &parent) const
@@ -597,25 +519,51 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
     m_nextRetryAt.remove(hostId);
     m_retryDelaySecs.remove(hostId);
 
-    // The host's session from now on; an NVR pushes its channels' states on it.
+    // The host's session from now on. The device pushes on it its detections
+    // once subscribed (cmd 31 on channel byte 251, then cmd 33), as the
+    // official client does, and an NVR its channels' states (cmd 145).
     dropSession(hostId);
     HostSession hs;
     hs.session = v.session;
-    if (v.session && v.channelNum > 1) {
+    if (v.session) {
         const std::weak_ptr<BcSession> weak = v.session;
-        hs.pushToken = v.session->addPushHandler([this, hostId, weak](const BcMessage &m) {
-            if (m.cmd != 145)
+        auto onPush = [this, hostId, weak](const BcMessage &m) {
+            if (m.cmd != 33 && m.cmd != 145)
                 return;
             const auto s = weak.lock();
-            if (!s)
+            if (!s || m.body.isEmpty())
                 return;
-            QHash<int, bool> states;
-            for (const auto &st : bcdev::parseChannelStates(s->bodyXml(m)))
-                states.insert(st.first, st.second);
+            const QByteArray xml = s->bodyXml(m);
+            if (m.cmd == 145) {
+                QHash<int, bool> states;
+                for (const auto &st : bcdev::parseChannelStates(xml))
+                    states.insert(st.first, st.second);
+                QMetaObject::invokeMethod(
+                    this, [this, hostId, states] { applyChannelStates(hostId, states); },
+                    Qt::QueuedConnection);
+                return;
+            }
+            const auto events = bcdev::parseAlarmEvents(xml);
+            if (events.isEmpty())
+                return;
+            for (const auto &ev : events)
+                qCDebug(lcCore) << "host" << hostId << "channel" << ev.first << "alarm: motion"
+                                << ev.second.motion << "person" << ev.second.person << "vehicle"
+                                << ev.second.vehicle << "pet" << ev.second.pet;
             QMetaObject::invokeMethod(
-                this, [this, hostId, states] { applyChannelStates(hostId, states); },
+                this,
+                [this, hostId, events] {
+                    for (const auto &ev : events)
+                        applyDetection(hostId, ev.first, ev.second);
+                },
                 Qt::QueuedConnection);
-        });
+        };
+        hs.pushToken = v.session->addPushHandler(onPush);
+        hs.alarmId = v.session->newMessId();
+        v.session->route(hs.alarmId, onPush);
+        v.session->send(31, 251, hs.alarmId, {}, {});
+        qCInfo(lcCore) << "host" << hostId << "alarm events subscribed on"
+                       << v.session->linkDescription();
     }
     if (hs.session)
         m_sessions.insert(hostId, hs);
@@ -945,16 +893,17 @@ void DeviceManager::ptzPatrol(int row, int patrolId, bool start)
 
 void DeviceManager::snapshot(int row)
 {
-    auto client = clientFor(row);
-    if (!client) {
+    const auto session = sessionFor(row);
+    if (!session) {
         emit snapshotFailed(row, tr("device not ready"));
         return;
     }
     const int ch = m_entries.at(row).channel;
     const QString name = m_entries.at(row).chanName;
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, name] {
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, row, name] {
+        // Full resolution, over the device's session (cmd 109).
         QString error;
-        const QByteArray jpeg = client->fetchSnapshot(ch, &error);
+        const QByteArray jpeg = bcdev::snapshot(*session, ch, /*mainStream=*/true, &error);
         QString path;
         if (!jpeg.isEmpty()) {
             const QString safe =
@@ -984,13 +933,14 @@ void DeviceManager::snapshot(int row)
 void DeviceManager::captureEventThumbnail(qint64 hostId, int channel, qint64 eventId)
 {
     const int row = rowOfHostChannel(hostId, channel);
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return; // silent: an event without a thumbnail still shows its placeholder
     const int ch = channel;
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, eventId] {
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, eventId] {
+        // The sub stream is plenty for a thumbnail, and quick (cmd 109).
         QString error;
-        const QByteArray jpeg = client->fetchSnapshot(ch, &error);
+        const QByteArray jpeg = bcdev::snapshot(*session, ch, /*mainStream=*/false, &error);
         if (jpeg.isEmpty())
             return;
         // Downscale so 100 cached thumbnails stay small (a Snap off a 4K/8K

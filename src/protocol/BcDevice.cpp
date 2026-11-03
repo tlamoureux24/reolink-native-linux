@@ -1,9 +1,11 @@
 #include "BcDevice.h"
 
 #include "core/Log.h"
+#include "protocol/BcCrypto.h"
 #include "protocol/BcSession.h"
 
 #include <QElapsedTimer>
+#include <QMutex>
 #include <QThread>
 #include <QXmlStreamReader>
 
@@ -246,6 +248,102 @@ QString parseChannelName(const QByteArray &xml)
     const Node root = parse(xml);
     const Node *n = root.find(u"OsdChannelName");
     return n ? n->value(u"name") : QString();
+}
+
+QVector<QPair<int, api::DetectionState>> parseAlarmEvents(const QByteArray &xml)
+{
+    QVector<QPair<int, api::DetectionState>> out;
+    const Node root = parse(xml);
+    const Node *list = root.find(u"AlarmEventList");
+    if (!list)
+        return out;
+    auto words = [](const QString &v) {
+        QStringList l;
+        for (const QString &w : v.split(QLatin1Char(','), Qt::SkipEmptyParts))
+            l << w.trimmed().toLower();
+        return l;
+    };
+    for (const Node &ev : list->kids) {
+        if (ev.name != u"AlarmEvent")
+            continue;
+        bool ok = false;
+        const int ch = ev.value(u"channelId").toInt(&ok);
+        if (!ok)
+            continue;
+        const QStringList status = words(ev.value(u"status"));
+        const QStringList ai = words(ev.value(u"AItype"));
+        api::DetectionState st;
+        st.motion = status.contains(QLatin1String("md"));
+        st.person = ai.contains(QLatin1String("people"));
+        st.vehicle = ai.contains(QLatin1String("vehicle"));
+        st.pet = ai.contains(QLatin1String("dog_cat"));
+        out.append({ch, st});
+    }
+    return out;
+}
+
+QByteArray snapshot(BcSession &s, int channel, bool mainStream, QString *error)
+{
+    struct State {
+        QMutex mutex;
+        QByteArray jpeg;
+        int expected = -1;
+        bool done = false;
+        quint16 status = 0;
+    };
+    auto st = std::make_shared<State>();
+    const QByteArray key = s.aesKey();
+    const quint32 id = s.newMessId();
+    s.route(id, [st, key](const BcMessage &m) {
+        if (m.cmd != 109)
+            return;
+        const int off = m.payloadOffset ? int(m.payloadOffset) : int(m.body.size());
+        const QByteArray xml = off ? bc::aesCfb(m.body.left(off), key, true) : QByteArray();
+        QByteArray payload = m.body.mid(off);
+        const int p = xml.indexOf("<encryptLen>");
+        if (p >= 0 && !payload.isEmpty()) {
+            const int n = xml.mid(p + 12, xml.indexOf("</encryptLen>", p) - p - 12).toInt();
+            payload = bc::aesCfb(payload.left(n), key, true) + payload.mid(n);
+        }
+        QMutexLocker lock(&st->mutex);
+        st->status = m.status;
+        const int a = xml.indexOf("<pictureSize>");
+        if (a >= 0)
+            st->expected = xml.mid(a + 13, xml.indexOf("</pictureSize>", a) - a - 13).toInt();
+        st->jpeg += payload;
+        // Ends with an empty message, or once the announced size is in.
+        if (m.body.isEmpty() || (st->expected > 0 && st->jpeg.size() >= st->expected)
+            || (m.status != 0 && m.status != 200 && st->jpeg.isEmpty()))
+            st->done = true;
+    });
+    const QByteArray body =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<Snap version=\"1.1\">\n<channelId>"
+        + QByteArray::number(channel)
+        + "</channelId>\n<logicChannel>0</logicChannel>\n<time>0</time>\n<fullFrame>0</fullFrame>\n"
+          "<streamType>"
+        + (mainStream ? "main" : "sub") + "</streamType>\n</Snap>\n</body>\n";
+    s.send(109, quint8(channel + 1), id, {}, bc::aesCfb(body, key, false));
+    QElapsedTimer t;
+    t.start();
+    for (;;) {
+        {
+            QMutexLocker lock(&st->mutex);
+            if (st->done)
+                break;
+        }
+        if (t.elapsed() > 30000 || !s.isAlive())
+            break;
+        QThread::msleep(50);
+    }
+    s.unroute(id);
+    QMutexLocker lock(&st->mutex);
+    if (!st->jpeg.startsWith("\xff\xd8")) {
+        if (error)
+            *error = st->status && st->status != 200 ? QStringLiteral("status %1").arg(st->status)
+                                                     : QStringLiteral("no image");
+        return {};
+    }
+    return st->jpeg;
 }
 
 bool readDevice(BcSession &s, const QString &username, Device *out)

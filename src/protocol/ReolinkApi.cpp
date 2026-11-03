@@ -195,20 +195,6 @@ Json ptzCtrl(int channel, const QString &op, int speed, int presetId)
     return command(QStringLiteral("PtzCtrl"), std::move(param));
 }
 
-QString snapUrl(const QString &host, int port, bool https, int channel, const QString &token,
-                const QString &rs)
-{
-    QString url = QStringLiteral("%1://%2:%3/cgi-bin/api.cgi?cmd=Snap&channel=%4&rs=%5")
-                      .arg(https ? QStringLiteral("https") : QStringLiteral("http"),
-                           hostForUrl(host))
-                      .arg(port)
-                      .arg(channel)
-                      .arg(rs);
-    if (!token.isEmpty())
-        url += QStringLiteral("&token=") + QString::fromUtf8(QUrl::toPercentEncoding(token));
-    return url;
-}
-
 // A capability is "present" when its {ver} (or bare int) is > 0.
 // Ability version; -1 when the key is absent (so callers can fall back).
 static int capVersion(const Json &chn, const char *key)
@@ -303,28 +289,6 @@ QVector<ChannelInfo> parseChannelStatus(const Json &value)
         out.append(ci);
     }
     return out;
-}
-
-Json getOsd(int channel)
-{
-    return command(QStringLiteral("GetOsd"), Json{{"channel", channel}}, /*action=*/1);
-}
-
-bool parseMdState(const Json &value)
-{
-    return jsonInt(value, "state", 0) != 0;
-}
-
-DetectionState parseAiState(const Json &value)
-{
-    // Each object type is {"alarm_state":0/1,"support":0/1}. Field names follow
-    // reolink_aio; dog_cat covers pets.
-    DetectionState d;
-    auto alarm = [&](const char *key) { return jsonInt(jsonObj(value, key), "alarm_state", 0) != 0; };
-    d.person = alarm("people");
-    d.vehicle = alarm("vehicle");
-    d.pet = alarm("dog_cat");
-    return d;
 }
 
 BatteryInfo parseBatteryInfo(const Json &value)

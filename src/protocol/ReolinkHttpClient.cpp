@@ -191,46 +191,6 @@ bool ReolinkHttpClient::downloadToFile(const QString &url, const QString &destPa
     return true;
 }
 
-QByteArray ReolinkHttpClient::fetchSnapshot(int channel, QString *error)
-{
-    // Snap rides the same fragile api.cgi endpoint as commands — same queue.
-    QMutexLocker requestLock(&m_requestMutex);
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        if (!ensureLogin(error))
-            return {};
-        QString token;
-        {
-            QMutexLocker lock(&m_mutex);
-            token = m_token;
-        }
-        const HttpResponse resp = get(api::snapUrl(m_host, m_port, m_https, channel, token));
-        if (!resp.ok) {
-            if (error)
-                *error = resp.error;
-            return {};
-        }
-        // A JSON body instead of an image means the token was rejected — the
-        // device answers Snap with an error object. Relogin once and retry.
-        if (resp.contentType.contains("image") || resp.body.startsWith("\xFF\xD8")) {
-            if (error)
-                error->clear();
-            return resp.body;
-        }
-        if (attempt == 0) {
-            QMutexLocker lock(&m_mutex);
-            if (m_token == token) {
-                m_token.clear();
-                m_tokenExpiry = {};
-            }
-            continue;
-        }
-        if (error)
-            *error = QStringLiteral("snapshot rejected");
-        return {};
-    }
-    return {};
-}
-
 QString ReolinkHttpClient::token()
 {
     QMutexLocker lock(&m_mutex);

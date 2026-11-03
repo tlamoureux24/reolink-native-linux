@@ -369,6 +369,9 @@ private:
                        bool storeNew = false);
     int rowForHostId(qint64 hostId) const;
     void warmPushCache();   // fetch each camera's push state once, staggered
+    // A channel's detection state from the device's alarm pushes (cmd 33):
+    // emits detectionEvent on each rising edge.
+    void applyDetection(qint64 hostId, int channel, const api::DetectionState &st);
     // An NVR's channels that dropped or returned (its cmd 145 pushes).
     void applyChannelStates(qint64 hostId, const QHash<int, bool> &chanOnline);
     // Every second: a host whose session ended goes offline and is revalidated.
@@ -387,7 +390,6 @@ private:
     QTimer m_pollTimer;
     // Keyed by "hostId:channel" so each NVR camera is tracked independently.
     QHash<QString, api::DetectionState> m_lastDetection; // for 0->1 edge detection
-    QHash<QString, bool> m_pollInFlight;                 // avoid overlapping polls
     QHash<int, int> m_pushEnabled;  // row -> push enable (1/0/-1) for notif gating
     // Each host's Baichuan session, as in the official client: everything about
     // the device goes through it, and its end is how the client notices a lost
@@ -395,6 +397,7 @@ private:
     struct HostSession {
         std::shared_ptr<BcSession> session;
         int pushToken = 0;
+        quint32 alarmId = 0; // the alarm subscription (cmd 31)
     };
     QHash<qint64, HostSession> m_sessions;
     void dropSession(qint64 hostId);

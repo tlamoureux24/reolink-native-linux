@@ -116,6 +116,17 @@ Mbit/s (the 256 kbit/s stream), main at 1× ≈ 6.9 Mbit/s. HTTP-FLV, the
 camera MP4 URL and the old cmd 143 playback on its own connection are gone
 (143 is `DOWNLOAD_CUT`, the clip download).
 
+**Step 4 — done, validated by the user (2026-11-03).** Detections are pushed by
+each device on its session: right after validation the client subscribes
+(cmd 31 on header channel byte 251, as the SDK and reolink_aio), and every
+`<AlarmEventList>` (cmd 33: `status` MD = motion, `AItype` people / vehicle /
+dog_cat) goes through the same rising-edge logic as the HTTP polling did. The
+first push, the current state, arrives within a second. Snapshots and event
+thumbnails come from cmd 109 `<Snap>` (an RLC-811A returns the full 3840×2160
+JPEG even for the sub stream, in about 0.7 s; thumbnails are scaled down
+here). The 10 s `GetMdState` / `GetAiState` polling and the HTTP `Snap` are
+gone: in 90 s of running the client made no HTTP request at all.
+
 ## Risks
 
 - **NVR:** the user has none at the moment, so NVR paths are written from the

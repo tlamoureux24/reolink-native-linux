@@ -23,6 +23,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QThread>
+#include <QFile>
 #include <QMutex>
 
 #include <cstdio>
@@ -62,6 +63,7 @@ int main(int argc, char **argv)
         {"seconds", "With --play: how long.", "s", "30"},
         {"rate", "With --play: playback speed.", "x", "1"},
         {"seek", "With --play: halfway, seek to this time of day.", "hh:mm:ss"},
+        {"snapshot", "Take a snapshot (cmd 109) into this file (--main for full size).", "file"},
         {"compare", "Read the device over Baichuan and over HTTP (GetDevInfo, GetAbility, "
                     "GetEnc) and print both, field by field."},
     });
@@ -176,6 +178,15 @@ int main(int argc, char **argv)
                     d.isNvr, d.channelNum, qPrintable(d.uid), qPrintable(d.firmware));
     }
 
+    if (cli.isSet("snapshot")) {
+        t.restart();
+        QString err;
+        const QByteArray jpeg = bcdev::snapshot(*s, 0, cli.isSet("main"), &err);
+        std::printf("snapshot: %d bytes in %lld ms %s\n", int(jpeg.size()), t.elapsed(), qPrintable(err));
+        QFile f(cli.value("snapshot"));
+        if (!jpeg.isEmpty() && f.open(QIODevice::WriteOnly))
+            f.write(jpeg);
+    }
     if (cli.isSet("search-day")) {
         const QDate date = QDate::fromString(cli.value("search-day"), Qt::ISODate);
         const bool main = cli.isSet("main");

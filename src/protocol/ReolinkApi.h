@@ -93,10 +93,6 @@ inline constexpr auto ToPos = "ToPos"; // go to preset (needs presetId)
 // by the device to its own range (typically 1..64).
 Json ptzCtrl(int channel, const QString &op, int speed = 32, int presetId = -1);
 
-// GET URL that returns a JPEG snapshot of the channel (not JSON). rs is a
-// cache-buster the device expects.
-QString snapUrl(const QString &host, int port, bool https, int channel, const QString &token,
-                const QString &rs = QStringLiteral("reolink"));
 
 // ---- Capabilities (GetAbility) --------------------------------------------
 // Per-channel capability flags parsed from Ability.abilityChn[i]. Field names
@@ -146,19 +142,13 @@ struct ChannelInfo {
 };
 QVector<ChannelInfo> parseChannelStatus(const Json &value);
 
-// ---- OSD ------------------------------------------------------------------
-Json getOsd(int channel);
-
-// ---- Detection state (polled for the event inbox) -------------------------
-// GetMdState -> plain motion; GetAiState -> per-object-type alarm flags.
+// ---- Detection state (pushed by the device, cmd 33) -----------------------
 struct DetectionState {
     bool motion = false;
     bool person = false;
     bool vehicle = false;
     bool pet = false;
 };
-bool parseMdState(const Json &value);              // GetMdState -> motion bool
-DetectionState parseAiState(const Json &value);    // GetAiState -> per-type flags
 
 // ---- Battery (GetBatteryInfo, battery/solar cameras) ----------------------
 struct BatteryInfo {
