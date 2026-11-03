@@ -15,6 +15,8 @@
 
 namespace rl {
 
+struct PacketAudio;
+
 // One live/playback stream: FFmpeg demux + decode on a dedicated worker thread,
 // frames delivered to a QML VideoOutput's QVideoSink (NV12/YUV420P upload path —
 // DESIGN.md §5: the universal fallback; zero-copy VAAPI arrives with the GPU spike).
@@ -113,6 +115,11 @@ public:
     // cleared by setSource(). Not a QML API.
     void setPacketSource(std::function<int(unsigned char *, int)> reader, const QString &format,
                          std::function<void()> onStop);
+    // The packet source's audio: the returned function takes its audio frames
+    // (AAC, or a Reolink IMA-ADPCM block) on any thread and plays them the way a
+    // URL stream's audio plays (hasAudio, audioEnabled, volume). Get it before
+    // the source starts; each call replaces the previous one. Not a QML API.
+    std::function<void(const QByteArray &frame, bool aac)> packetAudioInput();
 
     QVideoSink *videoSink() const;
     void setVideoSink(QVideoSink *sink);
@@ -194,6 +201,8 @@ private:
     QAudioSink *m_audioSink = nullptr;
     QIODevice *m_audioIo = nullptr;
     void closeAudio();
+    std::shared_ptr<PacketAudio> m_packetAudio; // see packetAudioInput()
+    void detachPacketAudio();
 
     State m_state = State::Idle;
     QString m_errorString;

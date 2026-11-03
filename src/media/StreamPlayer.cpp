@@ -3,6 +3,7 @@
 #include "core/AppSettings.h"
 #include "core/Log.h"
 #include "core/Paths.h"
+#include "media/ImaAdpcm.h"
 
 #include <QAudioFormat>
 #include <QDateTime>
@@ -590,7 +591,9 @@ bool runSession(const std::shared_ptr<Session> &s, bool *streamingOut)
             swr_free(swr);
         }
     } audioGuard{&adec, &swr};
-    postHasAudio(s, adec != nullptr);
+    // A packet source's audio arrives beside the demuxed video (packetAudioInput).
+    if (!packetSource)
+        postHasAudio(s, adec != nullptr);
     AVFrame *aframe = adec ? av_frame_alloc() : nullptr;
     struct AFrameGuard {
         AVFrame **f;
@@ -899,6 +902,110 @@ void runWorker(std::shared_ptr<Session> s)
 
 } // namespace
 
+// Audio of a packet source (native Baichuan), which arrives beside the video
+// instead of inside the demuxed stream: decoded on the caller's thread into the
+// same 48 kHz stereo S16 PCM as a URL stream's audio, then posted to the player.
+struct PacketAudio {
+    QMutex backMutex; // guards `player`, nulled when replaced or the player goes
+    QPointer<StreamPlayer> player;
+    std::atomic<bool> enabled{false};
+
+    QMutex decodeMutex;
+    bool announced = false;
+    AVCodecContext *aac = nullptr;
+    AVFrame *frame = nullptr;
+    SwrContext *swr = nullptr;
+    int swrRate = 0;
+    int swrFormat = -1;
+    int swrChannels = 0;
+
+    ~PacketAudio()
+    {
+        avcodec_free_context(&aac);
+        av_frame_free(&frame);
+        swr_free(&swr);
+    }
+
+    template <typename Fn> void toPlayer(Fn fn)
+    {
+        QMutexLocker lock(&backMutex);
+        if (StreamPlayer *p = player)
+            QMetaObject::invokeMethod(p, [p, fn] { fn(p); }, Qt::QueuedConnection);
+    }
+
+    void play(const uint8_t **in, int samples, const AVChannelLayout &layout, int format, int rate)
+    {
+        if (!swr || swrRate != rate || swrFormat != format || swrChannels != layout.nb_channels) {
+            swr_free(&swr);
+            const AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+            if (swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_S16, 48000, &layout,
+                                    static_cast<AVSampleFormat>(format), rate, 0, nullptr) < 0
+                || swr_init(swr) < 0) {
+                swr_free(&swr);
+                return;
+            }
+            swrRate = rate;
+            swrFormat = format;
+            swrChannels = layout.nb_channels;
+        }
+        const int outSamples = swr_get_out_samples(swr, samples);
+        QByteArray pcm(outSamples * 2 * 2, Qt::Uninitialized);
+        uint8_t *out = reinterpret_cast<uint8_t *>(pcm.data());
+        const int n = swr_convert(swr, &out, outSamples, in, samples);
+        if (n <= 0)
+            return;
+        pcm.truncate(n * 2 * 2);
+        toPlayer([pcm](StreamPlayer *p) { p->pushAudio(pcm); });
+    }
+
+    void input(const QByteArray &data, bool isAac)
+    {
+        QMutexLocker lock(&decodeMutex);
+        if (!announced) {
+            announced = true;
+            toPlayer([](StreamPlayer *p) { p->setHasAudioFromWorker(true); });
+        }
+        if (!enabled.load() || data.isEmpty())
+            return;
+        if (isAac) {
+            if (!aac) {
+                const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_AAC);
+                aac = codec ? avcodec_alloc_context3(codec) : nullptr;
+                if (!aac || avcodec_open2(aac, codec, nullptr) < 0) {
+                    avcodec_free_context(&aac);
+                    return;
+                }
+                frame = av_frame_alloc();
+            }
+            AVPacket *pkt = av_packet_alloc();
+            if (av_new_packet(pkt, static_cast<int>(data.size())) == 0) {
+                memcpy(pkt->data, data.constData(), data.size());
+                if (avcodec_send_packet(aac, pkt) == 0) {
+                    while (avcodec_receive_frame(aac, frame) == 0) {
+                        play(const_cast<const uint8_t **>(frame->extended_data), frame->nb_samples,
+                             frame->ch_layout, frame->format, frame->sample_rate);
+                        av_frame_unref(frame);
+                    }
+                }
+            }
+            av_packet_free(&pkt);
+            return;
+        }
+        // A Reolink IMA-ADPCM block, as the talk path sends them: 00 01, the
+        // block length in words, 00, then the predictor (LE16) and step index
+        // (LE16) the block starts from, then the nibbles. Mono, 8 kHz.
+        if (data.size() <= 8 || data.at(0) != 0 || data.at(1) != 1)
+            return;
+        const auto *d = reinterpret_cast<const uchar *>(data.constData());
+        const qint16 predictor = static_cast<qint16>(d[4] | (d[5] << 8));
+        const int index = qBound(0, int(d[6]), 88);
+        const QVector<qint16> samples = ImaAdpcm::decode(data.mid(8), predictor, index);
+        const uint8_t *in = reinterpret_cast<const uint8_t *>(samples.constData());
+        const AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
+        play(&in, static_cast<int>(samples.size()), mono, AV_SAMPLE_FMT_S16, 8000);
+    }
+};
+
 // applyStateFromWorker runs on the GUI thread (posted via invokeMethod).
 void StreamPlayer::applyStateFromWorker(State state, const QString &error)
 {
@@ -953,6 +1060,7 @@ StreamPlayer::StreamPlayer(QObject *parent) : QObject(parent) {}
 
 StreamPlayer::~StreamPlayer()
 {
+    detachPacketAudio();
     if (m_activeStop)
         m_activeStop();
     if (m_pendingStop)
@@ -975,6 +1083,7 @@ void StreamPlayer::setSource(const QString &source)
         return;
     stop();
     m_pendingReader = nullptr; // URL source supersedes any packet source
+    detachPacketAudio();
     m_pendingFormat.clear();
     m_pendingStop = nullptr;
     m_source = source;
@@ -998,6 +1107,27 @@ void StreamPlayer::setPacketSource(std::function<int(unsigned char *, int)> read
     m_pendingStop = std::move(onStop);
     m_source.clear();
     emit sourceChanged();
+}
+
+std::function<void(const QByteArray &, bool)> StreamPlayer::packetAudioInput()
+{
+    detachPacketAudio();
+    setHasAudioFromWorker(false); // until this source's first audio frame
+    auto audio = std::make_shared<PacketAudio>();
+    audio->player = this;
+    audio->enabled.store(m_audioEnabled);
+    m_packetAudio = audio;
+    return [audio](const QByteArray &frame, bool aac) { audio->input(frame, aac); };
+}
+
+void StreamPlayer::detachPacketAudio()
+{
+    if (!m_packetAudio)
+        return;
+    QMutexLocker lock(&m_packetAudio->backMutex);
+    m_packetAudio->player = nullptr; // its late frames become no-ops
+    lock.unlock();
+    m_packetAudio.reset();
 }
 
 QVideoSink *StreamPlayer::videoSink() const
@@ -1054,6 +1184,8 @@ void StreamPlayer::setAudioEnabled(bool enabled)
     m_audioEnabled = enabled;
     if (m_session)
         m_session->audioEnabled.store(enabled);
+    if (m_packetAudio)
+        m_packetAudio->enabled.store(enabled);
     if (!enabled)
         closeAudio();
     emit audioEnabledChanged();
@@ -1091,6 +1223,11 @@ void StreamPlayer::pushAudio(const QByteArray &pcm)
         m_audioSink->setBufferSize(48000 * 2 * 2 / 4); // ~250 ms: low live latency
         m_audioSink->setVolume(m_volume);
         m_audioIo = m_audioSink->start();
+        int peak = 0;
+        const auto *v = reinterpret_cast<const qint16 *>(pcm.constData());
+        for (qsizetype i = 0; i < pcm.size() / 2; ++i)
+            peak = qMax(peak, qAbs(int(v[i])));
+        qCInfo(lcMedia) << "audio output started:" << pcm.size() << "bytes, peak" << peak;
     }
     if (m_audioIo)
         m_audioIo->write(pcm); // a full buffer drops the excess (stays live)

@@ -185,6 +185,11 @@ int main(int argc, char *argv[])
         QStringLiteral("playbackGrid"), qEnvironmentVariableIsSet("RL_PLAYBACK_GRID"));
     engine.rootContext()->setContextProperty(
         QStringLiteral("playbackDate"), qEnvironmentVariable("RL_PLAYBACK_DATE"));
+    // RL_LIVE_AUDIO=<row>: turn that camera's sound on, at zero volume, so the
+    // log shows whether it decodes (headless checks, nothing heard).
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("liveAudioRow"),
+        qEnvironmentVariableIsSet("RL_LIVE_AUDIO") ? qEnvironmentVariableIntValue("RL_LIVE_AUDIO") : -1);
     // RL_LIVE_PTZ=<row>: maximize that camera with its PTZ pad and panel open.
     engine.rootContext()->setContextProperty(
         QStringLiteral("livePtzRow"),

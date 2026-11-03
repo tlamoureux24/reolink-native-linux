@@ -1,5 +1,6 @@
 #include "BaichuanClient.h"
 
+#include "core/Log.h"
 #include "protocol/BcCrypto.h"
 
 #include <QDateTime>
@@ -321,6 +322,17 @@ void BaichuanClient::pumpMedia(QTcpSocket &sock, const QByteArray &aesKey, quint
     const bool pace = m_p.startEpoch > 0;
     QElapsedTimer clock;
     quint32 firstMicros = 0;
+    bool audioSeen = false;
+    parser.onAudio = [&](const BcMediaParser::AudioFrame &a) {
+        if (!started || !m_p.onAudio)
+            return; // nothing to play with until the video has started
+        if (!audioSeen) {
+            audioSeen = true;
+            qCInfo(lcProto) << "baichuan stream: audio" << (a.aac ? "AAC" : "ADPCM") << a.data.size()
+                            << "bytes, starts" << a.data.left(4).toHex();
+        }
+        m_p.onAudio(a);
+    };
     parser.onVideo = [&](const BcMediaParser::VideoFrame &f) {
         if (f.codec != BcMediaParser::Codec::Unknown) {
             QMutexLocker lock(&m_mutex);

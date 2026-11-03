@@ -1401,6 +1401,9 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     p.uid = e.uid;
     p.mainStream = mainStream;
     p.startEpoch = startEpoch; // <= 0 = live (cmd 3 Preview), else by-time playback
+    // The stream's sound plays through the player like an RTSP stream's.
+    auto audio = player->packetAudioInput();
+    p.onAudio = [audio](const BcMediaParser::AudioFrame &a) { audio(a.data, a.aac); };
 
     auto client = std::make_shared<BaichuanClient>(p);
     client->start();

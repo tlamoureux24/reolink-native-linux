@@ -8,6 +8,7 @@
 #include <QWaitCondition>
 
 #include <atomic>
+#include <functional>
 #include <thread>
 
 class QTcpSocket;
@@ -39,6 +40,8 @@ public:
         QString uid;                    // camera UID (from GetChannelstatus)
         bool mainStream = true;
         qint64 startEpoch = 0;          // 0 => live preview; else recorded playback from here
+        // The stream's audio frames, called on the worker thread (optional).
+        std::function<void(const BcMediaParser::AudioFrame &)> onAudio;
     };
 
     explicit BaichuanClient(Params params);

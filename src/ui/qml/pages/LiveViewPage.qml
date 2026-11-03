@@ -212,6 +212,8 @@ Item {
         restoreLayout();
         if (typeof livePtzRow !== "undefined" && livePtzRow >= 0)
             Qt.callLater(function () { maximizedIndex = livePtzRow; });
+        if (typeof liveAudioRow !== "undefined" && liveAudioRow >= 0)
+            audioIndex = liveAudioRow;
     }
 
     ColumnLayout {

@@ -187,6 +187,7 @@ Rectangle {
         // Muted while this pane talks (default): the camera hearing itself
         // through the PC loops into feedback.
         audioEnabled: root.audioOn && !((root.talkActive || root.talkStarting) && AppSettings.muteWhileTalking)
+        volume: (typeof liveAudioRow !== "undefined" && liveAudioRow >= 0) ? 0 : 1 // test hook
     }
 
     Component.onDestruction: { endTalk(); player.stop(); }
@@ -496,8 +497,8 @@ Rectangle {
                 onActivated: root.qualityMain = !root.qualityMain
             }
             // Sound for this camera (mutes whichever pane had it). Disabled until
-            // the stream turns out to carry audio — the main stream of a
-            // maximized pane runs over Baichuan, whose audio isn't wired yet.
+            // the stream turns out to carry audio (RTSP, or Baichuan for the
+            // main stream of a maximized pane).
             ToolButton {
                 glyph: root.audioOn ? "🔊" : "🔇"; active: root.audioOn
                 enabledTool: player.hasAudio
