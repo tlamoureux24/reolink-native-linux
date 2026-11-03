@@ -388,7 +388,8 @@ Item {
                     required property int rotationOverride
 
                     readonly property int slot: page.paneOfRow(index)
-                    readonly property bool isMaximized: page.maximizedIndex === index
+                    readonly property bool isMaximized: page.maximizedIndex >= 0
+                                                        && page.maximizedIndex === index
 
                     // A maximized pane shows even when its slot is beyond the grid
                     // preset (e.g. camera 5 clicked while in the 4-grid).

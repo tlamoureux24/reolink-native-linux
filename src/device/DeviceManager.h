@@ -40,10 +40,10 @@ class ReolinkHttpClient;
 namespace rl {
 
 // The device tree behind the sidebar: hosts from the database, exposed to QML.
-// Adding a camera/NVR validates it over the HTTP-CGI API on a worker thread
-// (Login + GetDevInfo + GetEnc) and fills in name/model/codec. Credentials live
-// in the keyring; the in-memory copy (loaded on a worker thread) lets liveUrl()
-// build RTSP URLs without blocking the GUI thread on DBus.
+// Every camera/NVR has one Baichuan session (BcSession), opened on a worker
+// thread when it is added or the app starts; its identity, abilities and live
+// streams go through it. Credentials live in the keyring; the in-memory copy
+// (loaded on a worker thread) spares the GUI thread a DBus round trip.
 class DeviceManager : public QAbstractListModel
 {
     Q_OBJECT
@@ -110,7 +110,8 @@ public:
     Q_INVOKABLE void addStreamUrl(const QString &name, const QString &url);
     Q_INVOKABLE void removeDevice(int row);
 
-    // Playable URL for a device row; empty when credentials aren't loaded yet.
+    // Playable URL of a plain stream device; empty for Reolink devices (their
+    // live view is startBaichuanLive) and until credentials are loaded.
     Q_INVOKABLE QString liveUrl(int row, bool mainStream = true);
 
     // GetEnc-declared display size for a channel's main/sub stream (e.g. main
@@ -126,6 +127,16 @@ public:
             if (m_entries.at(i).rec.id == hostId && m_entries.at(i).channel == channel)
                 return i;
         return rowForHostId(hostId);
+    }
+    // A Reolink camera or NVR (live over Baichuan), not a plain stream URL.
+    Q_INVOKABLE bool usesBaichuanAt(int row) const
+    {
+        return row >= 0 && row < m_entries.size()
+               && m_entries.at(row).rec.kind != QLatin1String("stream");
+    }
+    Q_INVOKABLE bool isOnlineAt(int row) const
+    {
+        return row >= 0 && row < m_entries.size() && m_entries.at(row).online;
     }
     Q_INVOKABLE bool isAdminAt(int row) const
     {
@@ -189,11 +200,9 @@ public:
     // startEpoch straight into `player` — realtime, frame-accurate, full HEVC main.
     Q_INVOKABLE void startBaichuanPlayback(int row, qint64 startEpoch, rl::StreamPlayer *player,
                                            bool mainStream = true);
-    // Native LIVE view over Baichuan (cmd 3 Preview), for the maximized pane's HD
-    // stream. The NVR's RTSP output for 8K duo main streams is itself corrupt
-    // (verified: raw ffmpeg -c copy captures carry invalid NALUs), so HD live must
-    // go over Baichuan — the transport the official clients use. The NVR only
-    // allows ~1 concurrent Baichuan session; callers fall back to RTSP on error.
+    // Live view (cmd 3 Preview) inside the device's Baichuan session, main or
+    // sub stream, as the official client does; panes watching the same channel
+    // and stream share it.
     Q_INVOKABLE void startBaichuanLive(int row, rl::StreamPlayer *player,
                                        bool mainStream = true);
     // Seek the active Baichuan playback (same row) to a new instant in place — no

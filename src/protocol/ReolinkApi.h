@@ -69,12 +69,6 @@ struct LoginResult {
 };
 LoginResult parseLogin(const QByteArray &body);
 
-// rtsp://user:pass@host:554/<codec>Preview_<NN>_<main|sub>
-// channel is 0-based (as the HTTP API uses); the RTSP path is 1-based zero-padded.
-QString rtspUrl(const QString &host, const QString &username, const QString &password,
-                int channel = 0, bool mainStream = true, const QString &codec = QStringLiteral("h264"),
-                int port = 554);
-
 // ---- PTZ ------------------------------------------------------------------
 // Operations accepted by PtzCtrl (Reolink HTTP API). Directional ops run until a
 // matching Stop; ToPos/Auto/Patrol take an id.

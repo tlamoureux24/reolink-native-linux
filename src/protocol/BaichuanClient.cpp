@@ -2,12 +2,17 @@
 
 #include "core/Log.h"
 #include "protocol/BcCrypto.h"
+#include "protocol/BcSession.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QTcpSocket>
 #include <QThread>
 #include <QtEndian>
+
+#include <map>
+#include <mutex>
+#include <tuple>
 
 extern "C" {
 #include <libavutil/error.h>
@@ -113,6 +118,43 @@ QByteArray timeXml(const QString &tag, const QDateTime &dt)
         .toUtf8();
 }
 
+// cmd 3 live request, as the official SDK writes it (BaichuanPreviewer): the
+// handle is (stream type << 8) | channel, and "newestIFrame" makes the device
+// start from its latest key frame instead of waiting for the next one.
+QByteArray previewXml(int channel, bool mainStream)
+{
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body><Preview version=\"1.1\">\n<channelId>"
+        + QByteArray::number(channel) + "</channelId>\n<handle>"
+        + QByteArray::number(((mainStream ? 0 : 1) << 8) | channel) + "</handle>\n<streamType>"
+        + (mainStream ? "mainStream" : "subStream")
+        + "</streamType>\n<policy>newestIFrame</policy>\n</Preview></body>\n";
+}
+
+// cmd 4: close a live stream, under the message id that opened it.
+QByteArray previewStopXml(int channel, bool mainStream)
+{
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body><Preview version=\"1.1\">\n<channelId>"
+        + QByteArray::number(channel) + "</channelId>\n<handle>"
+        + QByteArray::number(((mainStream ? 0 : 1) << 8) | channel) + "</handle>\n</Preview></body>\n";
+}
+
+// The media bytes of one live/playback message: the extension says how many
+// leading payload bytes are AES-encrypted (encryptLen); the rest is clear.
+QByteArray mediaBytes(const QByteArray &body, quint32 payloadOffset, const QByteArray &aesKey)
+{
+    int encLen = 0;
+    if (payloadOffset > 0) {
+        const QByteArray ext = bc::aesCfb(body.left(int(payloadOffset)), aesKey, true);
+        const int p = ext.indexOf("<encryptLen>");
+        if (p >= 0) {
+            const int q = ext.indexOf("</encryptLen>", p);
+            encLen = ext.mid(p + 12, q - p - 12).toInt();
+        }
+    }
+    const QByteArray payload = body.mid(int(payloadOffset));
+    return encLen > 0 ? bc::aesCfb(payload.left(encLen), aesKey, true) + payload.mid(encLen) : payload;
+}
+
 } // namespace
 
 BaichuanClient::BaichuanClient(Params params) : m_p(std::move(params)) {}
@@ -167,10 +209,12 @@ int BaichuanClient::read(unsigned char *buf, int size)
     return n;
 }
 
-void BaichuanClient::pushAnnexB(const QByteArray &bytes)
+void BaichuanClient::pushAnnexB(const QByteArray &bytes, bool block)
 {
     QMutexLocker lock(&m_mutex);
     // Backpressure: block the producer if the reader falls far behind.
+    if (!block && m_ring.size() > kMaxRing)
+        m_ring.clear(); // a live view that far behind restarts from here
     while (m_ring.size() > kMaxRing && !m_abort.load())
         m_cond.wait(&m_mutex);
     if (m_abort.load())
@@ -181,6 +225,13 @@ void BaichuanClient::pushAnnexB(const QByteArray &bytes)
 
 void BaichuanClient::run()
 {
+    if (m_p.startEpoch <= 0) {
+        runSessionLive();
+        QMutexLocker lock(&m_mutex);
+        m_finished = true;
+        m_cond.wakeAll();
+        return;
+    }
     QTcpSocket sock;
     QByteArray aesKey;
     if (connectAndLogin(sock, aesKey) && !m_abort.load()) {
@@ -253,19 +304,6 @@ bool BaichuanClient::startStream(QTcpSocket &sock, const QByteArray &aesKey)
     const QString streamName = m_p.mainStream ? QStringLiteral("mainStream")
                                               : QStringLiteral("subStream");
     QByteArray netBuf = m_loginTail;
-
-    if (m_p.startEpoch <= 0) {
-        // Live preview: msg_id 3.
-        QByteArray preview =
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body><Preview version=\"1.1\">\n"
-            "<channelId>" + QByteArray::number(m_p.channel) + "</channelId>\n<handle>" +
-            QByteArray::number(m_p.mainStream ? 0 : 256) + "</handle>\n<streamType>" +
-            streamName.toUtf8() + "</streamType>\n</Preview></body>\n";
-        sock.write(frame(3, m_p.channel, streamByte, 20, 0, 0x6414, bc::aesCfb(preview, aesKey, false)));
-        sock.flush();
-        m_streamTail = netBuf;
-        return true;
-    }
 
     // Recorded playback by time (cmd 143). Media follows on msg_num 20.
     sendPlayback(sock, aesKey, m_p.startEpoch);
@@ -428,6 +466,129 @@ void BaichuanClient::pumpMedia(QTcpSocket &sock, const QByteArray &aesKey, quint
             ? bc::aesCfb(payload.left(encLen), aesKey, true) + payload.mid(encLen)
             : payload;
         parser.append(media);
+    }
+}
+
+} // namespace rl
+
+namespace rl {
+
+// Live streams open inside the device's session. As in the official SDK, a
+// device streams each (channel, stream type) once per session — opening it
+// again replaces it — so every client watching it shares the one stream.
+struct SharedLive {
+    std::shared_ptr<BcSession> session;
+    quint32 id = 0;
+    int channel = 0;
+    bool main = true;
+    BcMediaParser parser; // fed on the session worker only
+    QMutex mutex;         // subscribers
+    QList<BaichuanClient *> subscribers;
+    std::atomic<qint64> lastMedia{0};
+    std::atomic<bool> refused{false};
+};
+static std::mutex g_liveMutex;
+static std::map<std::tuple<BcSession *, int, bool>, std::shared_ptr<SharedLive>> g_live;
+
+void BaichuanClient::deliverShared(const BcMediaParser::VideoFrame &f)
+{
+    if (f.codec != BcMediaParser::Codec::Unknown) {
+        QMutexLocker lock(&m_mutex);
+        if (m_format.isEmpty())
+            m_format = (f.codec == BcMediaParser::Codec::H265) ? QStringLiteral("hevc")
+                                                               : QStringLiteral("h264");
+    }
+    if (!m_sharedKeyFrame && !f.keyFrame)
+        return; // joined mid-stream: start at the next key frame
+    m_sharedKeyFrame = true;
+    pushAnnexB(f.annexB, /*block=*/false);
+}
+
+void BaichuanClient::deliverSharedAudio(const BcMediaParser::AudioFrame &a)
+{
+    if (m_sharedKeyFrame && m_p.onAudio)
+        m_p.onAudio(a);
+}
+
+// Live view inside the device's session, opened the way the official client
+// does (BaichuanPreviewer): an id of its own, cmd 3 to open, cmd 4 to close
+// when its last viewer leaves.
+void BaichuanClient::runSessionLive()
+{
+    BcSession::Params sp;
+    sp.target = {m_p.host, m_p.port, QString(), false};
+    sp.username = m_p.username;
+    sp.password = m_p.password;
+    const std::shared_ptr<BcSession> s = BcSession::acquire(sp);
+    if (!s->waitReady(30000, &m_abort))
+        return;
+
+    std::shared_ptr<SharedLive> live;
+    {
+        std::lock_guard lock(g_liveMutex);
+        auto &slot = g_live[{s.get(), m_p.channel, m_p.mainStream}];
+        if (!slot) {
+            slot = std::make_shared<SharedLive>();
+            slot->session = s;
+            slot->channel = m_p.channel;
+            slot->main = m_p.mainStream;
+            slot->id = s->newMessId(m_p.mainStream ? 0 : 1);
+            slot->lastMedia = QDateTime::currentMSecsSinceEpoch();
+            SharedLive *l = slot.get();
+            l->parser.onVideo = [l](const BcMediaParser::VideoFrame &f) {
+                QMutexLocker lock(&l->mutex);
+                for (BaichuanClient *c : std::as_const(l->subscribers))
+                    c->deliverShared(f);
+            };
+            l->parser.onAudio = [l](const BcMediaParser::AudioFrame &a) {
+                QMutexLocker lock(&l->mutex);
+                for (BaichuanClient *c : std::as_const(l->subscribers))
+                    c->deliverSharedAudio(a);
+            };
+            const QByteArray key = s->aesKey();
+            s->route(l->id, [l, key](const BcMessage &m) {
+                if (m.cmd != 3)
+                    return;
+                if (m.body.isEmpty()) {
+                    if (m.status != 0 && m.status != 200)
+                        l->refused = true;
+                    return;
+                }
+                l->lastMedia = QDateTime::currentMSecsSinceEpoch();
+                l->parser.append(mediaBytes(m.body, m.payloadOffset, key));
+            });
+            s->send(3, quint8(m_p.channel), l->id, {},
+                    bc::aesCfb(previewXml(m_p.channel, m_p.mainStream), key, false));
+            qCInfo(lcProto) << "live opened: channel" << m_p.channel
+                            << (m_p.mainStream ? "main" : "sub") << "on" << s->linkDescription();
+        }
+        live = slot;
+        QMutexLocker subs(&live->mutex);
+        live->subscribers.append(this);
+    }
+
+    // Until stopped, the session ends, the device refuses, or no media came
+    // for 20 s (the pane then starts over).
+    while (!m_abort.load() && s->isAlive() && !live->refused
+           && QDateTime::currentMSecsSinceEpoch() - live->lastMedia < 20000)
+        QThread::msleep(100);
+
+    bool last = false;
+    {
+        std::lock_guard lock(g_liveMutex);
+        {
+            QMutexLocker subs(&live->mutex);
+            live->subscribers.removeOne(this);
+            last = live->subscribers.isEmpty();
+        }
+        if (last)
+            g_live.erase({s.get(), live->channel, live->main});
+    }
+    if (last) {
+        s->unroute(live->id);
+        if (s->isAlive())
+            s->send(4, quint8(live->channel), live->id, {},
+                    bc::aesCfb(previewStopXml(live->channel, live->main), s->aesKey(), false));
     }
 }
 

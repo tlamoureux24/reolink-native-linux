@@ -67,11 +67,19 @@ public:
 
 private:
     void run();                                    // worker entry
+    // Live view inside the device's session (cmd 3 / cmd 4), shared with every
+    // other client watching the same channel and stream.
+    void runSessionLive();
+    // A frame of that shared stream (session worker).
+    void deliverShared(const BcMediaParser::VideoFrame &f);
+    void deliverSharedAudio(const BcMediaParser::AudioFrame &a);
     bool connectAndLogin(QTcpSocket &sock, QByteArray &aesKey);
     bool startStream(QTcpSocket &sock, const QByteArray &aesKey);
     void sendPlayback(QTcpSocket &sock, const QByteArray &aesKey, qint64 startEpoch);
     void pumpMedia(QTcpSocket &sock, const QByteArray &aesKey, quint16 streamMsgNum);
-    void pushAnnexB(const QByteArray &bytes);
+    // `block`: wait for the reader when far behind (own connection); a shared
+    // session's worker must not wait, so it drops instead.
+    void pushAnnexB(const QByteArray &bytes, bool block = true);
 
     Params m_p;
     std::thread m_thread;
@@ -84,6 +92,7 @@ private:
     qint64 m_seekEpoch = 0;   // pending in-place seek target (0 = none)
     QString m_format;         // "h264"/"hevc", guarded by m_mutex
     bool m_started = false;
+    bool m_sharedKeyFrame = false; // a key frame reached us on the shared stream
     QByteArray m_loginTail;   // socket bytes buffered past the login reply
     QByteArray m_streamTail;  // socket bytes buffered past the stream-start reply
 };

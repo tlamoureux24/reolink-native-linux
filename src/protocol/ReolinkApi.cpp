@@ -184,19 +184,6 @@ LoginResult parseLogin(const QByteArray &body)
     return out;
 }
 
-QString rtspUrl(const QString &host, const QString &username, const QString &password,
-                int channel, bool mainStream, const QString &codec, int port)
-{
-    const QString user = QString::fromUtf8(QUrl::toPercentEncoding(username));
-    const QString pass = QString::fromUtf8(QUrl::toPercentEncoding(password));
-    // Concatenation, not .arg(): percent-encoded credentials contain sequences
-    // like %3A that .arg() would consume as positional placeholders.
-    return QStringLiteral("rtsp://") + user + u':' + pass + u'@' + hostForUrl(host) + u':' +
-           QString::number(port) + u'/' + codec + QStringLiteral("Preview_") +
-           QString::number(channel + 1).rightJustified(2, u'0') + u'_' +
-           (mainStream ? QStringLiteral("main") : QStringLiteral("sub"));
-}
-
 Json ptzCtrl(int channel, const QString &op, int speed, int presetId)
 {
     Json param = {{"channel", channel}, {"op", op.toStdString()}};

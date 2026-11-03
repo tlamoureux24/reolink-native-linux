@@ -72,7 +72,7 @@ unless they agree otherwise) and validated by the user before the next one.
 
 ## Progress
 
-**Step 1 — done (not yet validated by the user).** `BcSession` (one per
+**Step 1 — done, validated by the user (2026-11-03).** `BcSession` (one per
 device, heartbeat cmd 93 after 5 s, lost after 20 s of silence) and
 `bcdev::readDevice` (login `DeviceInfo`, cmd 80, 114, 199, 151, 56, 44, 253,
 145 pushes) replace the HTTP sign-in, `GetDevInfo`, `GetAbility`, `GetEnc`,
@@ -86,6 +86,18 @@ state). Compared field by field with the HTTP answers on the six cameras
 The main-stream codec is not in any config reply — it is in each frame's
 header — so the live stream is probed instead of being told the codec.
 Detection polling and the other features still use HTTP until their steps.
+
+**Step 2 — done, validated by the user (2026-11-03).** Grid (sub) and single
+view (main) stream inside the device's session: cmd 3 with the SDK's
+`Preview` (handle `(streamType << 8) | channel`, policy `newestIFrame`), one
+stream per (channel, stream type) shared by every pane or window watching it,
+closed with cmd 4 by its last viewer; the header channel byte stays 0-based
+for cmd 3 (as the client sent it to NVRs before). A pane streams while its
+device is online and starts again when it comes back. RTSP is gone for
+Reolink devices (only plain stream devices keep a URL). Rows of a revalidated
+device are now updated in place: they used to be removed and re-inserted,
+which shifted every pane to another camera for a moment and briefly opened
+main streams at start-up.
 
 ## Risks
 

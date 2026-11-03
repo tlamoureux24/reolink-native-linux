@@ -82,30 +82,32 @@ Window {
         id: player
         videoSink: video.videoSink
     }
-    property bool bcFallback: false // Baichuan slot busy -> RTSP main this round
+    // Main stream inside the device's Baichuan session, or a plain stream's URL.
     function startStream() {
         if (win.deviceRow < 0)
             return;
-        if (!bcFallback) {
+        if (Devices.usesBaichuanAt(win.deviceRow)) {
             player.loop = false;
             Devices.startBaichuanLive(win.deviceRow, player, true);
             return;
         }
-        var url = Devices.liveUrl(win.deviceRow, true); // degraded: RTSP main
+        var url = Devices.liveUrl(win.deviceRow, true);
         if (url.length > 0) {
-            player.expectedSize = Devices.declaredSize(win.deviceRow, true); // main
+            player.expectedSize = Devices.declaredSize(win.deviceRow, true);
             player.source = url;
             player.start();
         }
     }
     Component.onCompleted: startStream()
-    Connections {
-        target: player
-        function onStateChanged() {
-            if (player.state === StreamPlayer.Error && !win.bcFallback) {
-                win.bcFallback = true;
+    // A live stream that ended starts over while the device is online.
+    Timer {
+        interval: 5000
+        repeat: true
+        running: win.visible // a closed window is only hidden
+        onTriggered: {
+            if ((player.state === StreamPlayer.Error || player.state === StreamPlayer.Stopped)
+                && Devices.isOnlineAt(win.deviceRow))
                 win.startStream();
-            }
         }
     }
     onClosing: player.stop()

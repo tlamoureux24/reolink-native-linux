@@ -27,20 +27,6 @@
 namespace rl {
 
 namespace {
-// Firmware spells the codec several ways ("h265", "H265", "hevc") and newer
-// builds sometimes omit the field entirely. Empty result = unknown, and an
-// unknown codec is PROBED from the stream rather than assumed — assuming h264
-// for an HEVC main stream is exactly issue #4.
-QString normalizeCodec(const QString &vtype)
-{
-    const QString v = vtype.toLower();
-    if (v.contains(QLatin1String("265")) || v.contains(QLatin1String("hevc")))
-        return QStringLiteral("h265");
-    if (v.contains(QLatin1String("264")) || v.contains(QLatin1String("avc")))
-        return QStringLiteral("h264");
-    return {};
-}
-
 // Per-camera manual view-rotation fix (issue #3), keyed by identity rather
 // than row because rows shift when devices come and go.
 QString rotationKey(qint64 hostId, int channel)
@@ -55,15 +41,6 @@ int loadRotation(qint64 hostId, int channel)
 
 
 namespace {
-// Declared display size of a GetEnc stream ("mainStream"/"subStream"), e.g.
-// 7680x2160. Empty if absent/zero. Used to detect transmitted-rotated streams.
-QSize encStreamSize(const Json &enc, const char *stream)
-{
-    const Json s = jsonObj(enc, stream);
-    const int w = jsonInt(s, "width", 0);
-    const int h = jsonInt(s, "height", 0);
-    return (w > 0 && h > 0) ? QSize(w, h) : QSize();
-}
 } // namespace
 
 DeviceManager::DeviceManager(Database *db, CredentialStore *credentials, QObject *parent)
@@ -676,6 +653,26 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         if (ch.channel == 0)
             e.battery = v.battery;
         fresh.append(e);
+    }
+
+    // Same channels as before (a camera revalidated, an NVR with the same
+    // cameras): update the rows in place, so the panes showing them keep their
+    // camera and stream instead of being rebuilt.
+    bool sameChannels = fresh.size() == oldCount;
+    for (int j = 0; sameChannels && j < oldCount; ++j)
+        sameChannels = m_entries.at(first + j).channel == fresh.at(j).channel;
+    if (sameChannels) {
+        for (int j = 0; j < oldCount; ++j) {
+            Entry e = fresh.at(j);
+            const Entry &old = m_entries.at(first + j);
+            e.recordingFiles = old.recordingFiles; // learned by the last search
+            e.playbackOffsetSecs = old.playbackOffsetSecs;
+            m_entries[first + j] = e;
+        }
+        emit dataChanged(index(first), index(first + oldCount - 1));
+        if (recovered)
+            emit connectivityChanged(hostId, -1, rec.name, true);
+        return;
     }
 
     // Replace the old block with the new channel entries.
@@ -1362,7 +1359,7 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     p.uid = e.uid;
     p.mainStream = mainStream;
     p.startEpoch = startEpoch; // <= 0 = live (cmd 3 Preview), else by-time playback
-    // The stream's sound plays through the player like an RTSP stream's.
+    // The stream's sound plays through the player.
     auto audio = player->packetAudioInput();
     p.onAudio = [audio](const BcMediaParser::AudioFrame &a) { audio(a.data, a.aac); };
 
@@ -1960,25 +1957,20 @@ QString DeviceManager::nameAt(int row) const
 
 QString DeviceManager::liveUrl(int row, bool mainStream)
 {
+    Q_UNUSED(mainStream)
     if (row < 0 || row >= m_entries.size())
         return {};
     const Entry &e = m_entries.at(row);
-
-    if (e.rec.kind == QLatin1String("stream")) {
-        if (e.rec.username.isEmpty() && e.password.isEmpty())
-            return e.rec.addr;
-        QUrl u(e.rec.addr);
-        u.setUserName(e.rec.username);
-        u.setPassword(e.password);
-        return u.toString(QUrl::FullyEncoded);
-    }
-
-    if (!e.primed)
+    // Only a plain stream device has a URL: Reolink cameras and NVRs stream
+    // live inside their Baichuan session (startBaichuanLive).
+    if (e.rec.kind != QLatin1String("stream"))
         return {};
-    // Sub stream ("Fluent") is h264 on all models; main ("Clear") may be h265.
-    const QString codec = (mainStream && !e.mainCodec.isEmpty()) ? e.mainCodec
-                                                                 : QStringLiteral("h264");
-    return api::rtspUrl(e.rec.addr, e.rec.username, e.password, e.channel, mainStream, codec);
+    if (e.rec.username.isEmpty() && e.password.isEmpty())
+        return e.rec.addr;
+    QUrl u(e.rec.addr);
+    u.setUserName(e.rec.username);
+    u.setPassword(e.password);
+    return u.toString(QUrl::FullyEncoded);
 }
 
 } // namespace rl

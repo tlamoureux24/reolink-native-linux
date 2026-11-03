@@ -61,13 +61,10 @@ Rectangle {
     readonly property bool effectiveMain: qualityMain
     onForceMainChanged: qualityMain = forceMain
     readonly property bool hasSource: deviceRow >= 0
-    // What this pane is currently streaming: an RTSP URL, or "bc:<row>" for native
-    // Baichuan HD live. HD (main) live goes over Baichuan because the NVR's RTSP
-    // output for 8K duo main streams is itself corrupt (verified against raw
-    // captures) — the official clients use Baichuan for live too. The grid's sub
-    // streams stay RTSP (clean, and the NVR only allows ~1 Baichuan session).
+    // What this pane is currently streaming: "bc:<row>:main|sub" — live inside
+    // the device's Baichuan session, as the official client does (one session
+    // per device, every stream in it) — or the URL of a plain stream device.
     property string streamKey: ""
-    property bool bcFallback: false // Baichuan slot busy → RTSP main for this round
 
     // These carry the DEVICE ROW, not the pane index: the page tracks which
     // camera is maximized/selected, so both survive a rearrange.
@@ -125,8 +122,11 @@ Rectangle {
         var want = deviceRow >= 0 && visible && pageActive;
         var key = "";
         if (want) {
-            if (effectiveMain && !bcFallback)
-                key = "bc:" + deviceRow;
+            // In the device's session: streams while it is online, starts
+            // again when it comes back.
+            if (Devices.usesBaichuanAt(deviceRow))
+                key = Devices.isOnlineAt(deviceRow)
+                    ? "bc:" + deviceRow + (effectiveMain ? ":main" : ":sub") : "";
             else
                 key = Devices.liveUrl(deviceRow, effectiveMain);
         }
@@ -137,7 +137,7 @@ Rectangle {
             player.stop();
         } else if (key.substring(0, 3) === "bc:") {
             player.loop = false;
-            Devices.startBaichuanLive(root.deviceRow, player, true);
+            Devices.startBaichuanLive(root.deviceRow, player, key.endsWith(":main"));
         } else {
             // Set loop before start() so the worker sees the right value from
             // frame one (the declarative `loop:` binding can lag the handler).
@@ -152,21 +152,22 @@ Rectangle {
     }
     // A pane pointed at a different camera must let the old one go now — its
     // session is wanted elsewhere (a swap hands it straight to another pane).
-    onDeviceRowChanged: { endTalk(); bcFallback = false; releaseStream(); updateSource(); }
+    onDeviceRowChanged: { endTalk(); releaseStream(); updateSource(); }
     onVisibleChanged: updateSource()
     onPageActiveChanged: updateSource()
-    onEffectiveMainChanged: { bcFallback = false; updateSource(); }
+    onEffectiveMainChanged: updateSource()
     Component.onCompleted: updateSource()
 
-    // The NVR grants only ~1 Baichuan session. If HD live can't get the slot,
-    // fall back to RTSP main once (artifact-prone on 8K duos, but beats a dead
-    // pane); the next SD/HD flip or camera change retries Baichuan.
-    Connections {
-        target: player
-        function onStateChanged() {
-            if (player.state === StreamPlayer.Error && !root.bcFallback
-                && root.streamKey.substring(0, 3) === "bc:") {
-                root.bcFallback = true;
+    // A live stream that ended (no media for 20 s, or refused) starts over
+    // while its device is online.
+    Timer {
+        interval: 5000
+        repeat: true
+        running: root.streamKey.substring(0, 3) === "bc:"
+        onTriggered: {
+            if ((player.state === StreamPlayer.Error || player.state === StreamPlayer.Stopped)
+                && Devices.isOnlineAt(root.deviceRow)) {
+                root.streamKey = "";
                 root.updateSource();
             }
         }
@@ -497,8 +498,7 @@ Rectangle {
                 onActivated: root.qualityMain = !root.qualityMain
             }
             // Sound for this camera (mutes whichever pane had it). Disabled until
-            // the stream turns out to carry audio (RTSP, or Baichuan for the
-            // main stream of a maximized pane).
+            // the stream turns out to carry audio.
             ToolButton {
                 glyph: root.audioOn ? "🔊" : "🔇"; active: root.audioOn
                 enabledTool: player.hasAudio

@@ -112,32 +112,10 @@ private slots:
         QVERIFY(!api::parseBatch("").transportOk);
     }
 
-    void rtspUrlFormat()
-    {
-        // Channel is 0-based in the API, 1-based zero-padded in the RTSP path
-        // (docs/research/fact-check.md).
-        QCOMPARE(api::rtspUrl(QStringLiteral("10.0.0.5"), QStringLiteral("admin"),
-                              QStringLiteral("secret"), 0, true),
-                 QStringLiteral("rtsp://admin:secret@10.0.0.5:554/h264Preview_01_main"));
-        QCOMPARE(api::rtspUrl(QStringLiteral("10.0.0.5"), QStringLiteral("admin"),
-                              QStringLiteral("secret"), 15, false),
-                 QStringLiteral("rtsp://admin:secret@10.0.0.5:554/h264Preview_16_sub"));
-    }
-
-    void rtspUrlEscapesCredentials()
-    {
-        const QString url = api::rtspUrl(QStringLiteral("h"), QStringLiteral("user@x"),
-                                         QStringLiteral("p:a/s"), 0, true);
-        QCOMPARE(url, QStringLiteral("rtsp://user%40x:p%3Aa%2Fs@h:554/h264Preview_01_main"));
-    }
-
     void ipv6HostsAreBracketed()
     {
         QVERIFY(api::apiUrl(QStringLiteral("fd00::12"), 443, true, QStringLiteral("Login"))
                     .startsWith(QStringLiteral("https://[fd00::12]:443/")));
-        QVERIFY(api::rtspUrl(QStringLiteral("fd00::12"), QStringLiteral("a"), QStringLiteral("b"),
-                             0, true)
-                    .contains(QStringLiteral("@[fd00::12]:554/")));
     }
 
     void ptzCtrlBuild()
