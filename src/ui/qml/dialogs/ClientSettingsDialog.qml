@@ -94,6 +94,19 @@ Dialog {
                     }
                 }
 
+                // ---- Appearance ----
+                Section { text: qsTr("Appearance") }
+                SettingLine {
+                    label: qsTr("Theme")
+                    ThemedComboBox {
+                        Layout.preferredWidth: 220
+                        readonly property var themes: ["dark", "light", "system"]
+                        model: [qsTr("Dark"), qsTr("Light"), qsTr("Same as the system")]
+                        currentIndex: Math.max(0, themes.indexOf(AppSettings.theme))
+                        onActivated: (i) => AppSettings.theme = themes[i]
+                    }
+                }
+
                 // ---- Startup and tray ----
                 Section { text: qsTr("Startup"); visible: Tray.available }
                 SettingLine {

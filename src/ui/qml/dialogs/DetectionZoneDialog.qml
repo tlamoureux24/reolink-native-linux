@@ -24,6 +24,12 @@ Dialog {
 
     title: qsTr("Detection Zone")
     background: Rectangle { color: Theme.surface; border.color: Theme.border; radius: Theme.radius }
+    // Themed title (the Basic style's header paints a light bar).
+    header: Text {
+        text: dlg.title
+        color: Theme.text; font.pixelSize: 15; font.bold: true
+        padding: Theme.spacing * 2
+    }
 
     function openFor(row, md) {
         deviceRow = row;

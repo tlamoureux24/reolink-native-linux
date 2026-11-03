@@ -202,6 +202,10 @@ int main(int argc, char *argv[])
     // RL_CLIENT_SETTINGS=1: open the client settings dialog (screenshots).
     engine.rootContext()->setContextProperty(
         QStringLiteral("openClientSettings"), qEnvironmentVariableIsSet("RL_CLIENT_SETTINGS"));
+    // RL_PROPERTIES_ROW=<row>: open that camera's Properties sheet (screenshots).
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("propertiesRow"),
+        qEnvironmentVariableIsSet("RL_PROPERTIES_ROW") ? qEnvironmentVariableIntValue("RL_PROPERTIES_ROW") : -1);
     engine.rootContext()->setContextProperty(QStringLiteral("startHidden"),
                                              parser.isSet(hiddenOption) && tray.available());
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,

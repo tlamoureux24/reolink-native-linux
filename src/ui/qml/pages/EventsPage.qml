@@ -193,7 +193,7 @@ Item {
                 height: 72
                 radius: Theme.radius
                 color: rowHover.hovered ? Theme.surfaceAlt : Theme.surface
-                border.color: rowHover.hovered ? Theme.border : Qt.rgba(1, 1, 1, 0.04)
+                border.color: rowHover.hovered ? Theme.border : Theme.faintBorder
 
                 // Left accent bar in the event's type color.
                 Rectangle {

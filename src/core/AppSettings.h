@@ -23,6 +23,9 @@ class AppSettings : public QObject
     // follow the chosen language, not only the system's (Qt.locale(localeName)).
     Q_PROPERTY(QString localeName READ localeName NOTIFY languageChanged)
     Q_PROPERTY(QString systemLanguageName READ systemLanguageName CONSTANT)
+    // Colour theme: "dark" (default), "light", or "system" to follow the
+    // desktop's light/dark preference. Theme.qml picks its palette from it.
+    Q_PROPERTY(QString theme READ theme WRITE setTheme NOTIFY themeChanged)
     Q_PROPERTY(bool hardwareDecoding READ hardwareDecoding WRITE setHardwareDecoding NOTIFY hardwareDecodingChanged)
     Q_PROPERTY(QString recordingsDir READ recordingsDir WRITE setRecordingsDir NOTIFY recordingsDirChanged)
     Q_PROPERTY(bool desktopNotifications READ desktopNotifications WRITE setDesktopNotifications NOTIFY desktopNotificationsChanged)
@@ -42,6 +45,9 @@ public:
     QVariantList languages() const;
     QString localeName() const;
     QString systemLanguageName() const;
+
+    QString theme() const { return m_theme; }
+    void setTheme(const QString &theme);
 
     bool hardwareDecoding() const { return s_hardwareDecoding.load(); }
     void setHardwareDecoding(bool on);
@@ -75,6 +81,7 @@ public:
 
 signals:
     void languageChanged();
+    void themeChanged();
     void hardwareDecodingChanged();
     void recordingsDirChanged();
     void desktopNotificationsChanged();
@@ -87,6 +94,7 @@ private:
     bool loadTranslation();
 
     QString m_language;
+    QString m_theme;
     bool m_checkUpdates = true;
     int m_tourSeconds = 10;
     bool m_muteWhileTalking = true;

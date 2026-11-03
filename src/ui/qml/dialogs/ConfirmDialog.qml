@@ -21,6 +21,12 @@ Dialog {
 
     title: qsTr("Are you sure?")
     background: Rectangle { color: Theme.surface; border.color: Theme.border; radius: Theme.radius }
+    // Themed title (the Basic style's header paints a light bar).
+    header: Text {
+        text: dialog.title
+        color: Theme.text; font.pixelSize: 15; font.bold: true
+        padding: Theme.spacing * 2
+    }
 
     ColumnLayout {
         anchors.fill: parent

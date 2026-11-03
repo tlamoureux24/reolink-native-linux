@@ -222,6 +222,31 @@
     </message>
     <message>
         <location line="+11" />
+        <source>Appearance</source>
+        <translation>Apparence</translation>
+    </message>
+    <message>
+        <location line="+2" />
+        <source>Theme</source>
+        <translation>Thème</translation>
+    </message>
+    <message>
+        <location line="+4" />
+        <source>Dark</source>
+        <translation>Sombre</translation>
+    </message>
+    <message>
+        <location line="+0" />
+        <source>Light</source>
+        <translation>Clair</translation>
+    </message>
+    <message>
+        <location line="+0" />
+        <source>Same as the system</source>
+        <translation>Comme le système</translation>
+    </message>
+    <message>
+        <location line="+7" />
         <source>Startup</source>
         <translation>Démarrage</translation>
     </message>
@@ -379,7 +404,7 @@
         <translation>Êtes-vous sûr ?</translation>
     </message>
     <message>
-        <location line="+25" />
+        <location line="+31" />
         <source>Cancel</source>
         <translation>Annuler</translation>
     </message>
@@ -392,7 +417,7 @@
         <translation>Zone de détection</translation>
     </message>
     <message>
-        <location line="+31" />
+        <location line="+37" />
         <source>Drag over the image to toggle areas. Red areas are ignored — motion there won't trigger alarms.</source>
         <translation>Glissez sur l'image pour basculer des zones. Les zones rouges sont ignorées — un mouvement à cet endroit ne déclenchera pas d'alarme.</translation>
     </message>
@@ -1550,7 +1575,7 @@
         <translation>Télécharger</translation>
     </message>
     <message>
-        <location line="+134" />
+        <location line="+139" />
         <source>PTZ</source>
         <translation>PTZ</translation>
     </message>
@@ -1591,12 +1616,12 @@
     </message>
     <message>
         <location line="+1" />
-        <location line="+21" />
+        <location line="+22" />
         <source>Camera</source>
         <translation>Caméra</translation>
     </message>
     <message>
-        <location line="-19" />
+        <location line="-20" />
         <source>Status</source>
         <translation>État</translation>
     </message>
@@ -1621,7 +1646,7 @@
         <translation>Flux principal</translation>
     </message>
     <message>
-        <location line="+2" />
+        <location line="+3" />
         <source>Sub stream</source>
         <translation>Flux secondaire</translation>
     </message>
@@ -1994,7 +2019,7 @@
         <translation>Masques de confidentialité</translation>
     </message>
     <message>
-        <location line="+41" />
+        <location line="+47" />
         <source>Drag on the image to cover an area (up to %1). Right-click an area to remove it. Covered areas are blacked out in live view and recordings.</source>
         <translation>Glissez sur l'image pour masquer une zone (jusqu'à %1). Clic droit sur une zone pour la supprimer. Les zones masquées sont noircies dans le direct et les enregistrements.</translation>
     </message>
@@ -2037,7 +2062,12 @@
         <translation>Supprimer</translation>
     </message>
     <message>
-        <location line="+79" />
+        <location line="+53" />
+        <source>Close</source>
+        <translation>Fermer</translation>
+    </message>
+    <message>
+        <location line="+39" />
         <source>Open settings</source>
         <translation>Ouvrir les réglages</translation>
     </message>
@@ -2327,7 +2357,7 @@
         <translation>Planning d'enregistrement</translation>
     </message>
     <message>
-        <location line="+52" />
+        <location line="+58" />
         <source>Drag to choose when %1 recording is active (blue = recording).</source>
         <translation>Glissez pour choisir quand l'enregistrement %1 est actif (bleu = enregistrement).</translation>
     </message>
@@ -2482,7 +2512,17 @@ Cliquez sur + pour en ajouter un.</translation>
         <translation>Changer le mot de passe</translation>
     </message>
     <message>
-        <location line="+21" />
+        <location line="+16" />
+        <source>Cancel</source>
+        <translation>Annuler</translation>
+    </message>
+    <message>
+        <location line="+10" />
+        <source>OK</source>
+        <translation>OK</translation>
+    </message>
+    <message>
+        <location line="+23" />
         <source>Username</source>
         <translation>Nom d'utilisateur</translation>
     </message>

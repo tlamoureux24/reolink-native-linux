@@ -108,7 +108,7 @@ ApplicationWindow {
                     property string label: ""
                     signal clicked()
                     implicitWidth: bl.implicitWidth + 22; implicitHeight: 26; radius: Theme.radius
-                    color: bh.hovered ? Qt.rgba(1, 1, 1, 0.18) : Qt.rgba(1, 1, 1, 0.08)
+                    color: bh.hovered ? Theme.tintHover : Theme.tint
                     Text { id: bl; anchors.centerIn: parent; text: parent.label; color: Theme.text; font.pixelSize: 12 }
                     HoverHandler { id: bh }
                     TapHandler { onTapped: parent.clicked() }
@@ -250,6 +250,11 @@ ApplicationWindow {
         id: propsDialog
         onOpenSettings: (row) => { nav.currentIndex = 3; settingsPage.showDevice(row); }
     }
+    Timer {
+        running: typeof propertiesRow !== "undefined" && propertiesRow >= 0
+        interval: 3000
+        onTriggered: window.showCameraProperties(propertiesRow)
+    }
     function showCameraProperties(row) {
         var c = Devices.cameraInfo(row);
         if (!c || c.name === undefined)
@@ -269,7 +274,8 @@ ApplicationWindow {
             { label: qsTr("Status"), value: c.online ? qsTr("Online") : qsTr("Offline") },
             { label: qsTr("Channel"), value: String(c.channel) },
             { label: qsTr("Main stream"),
-              value: String(c.codec).toUpperCase() + (c.mainSize ? " · " + c.mainSize : "") },
+              value: [String(c.codec || "").toUpperCase(), c.mainSize || ""]
+                         .filter(function (s) { return s.length > 0; }).join(" · ") || "—" },
             { label: qsTr("Sub stream"), value: c.subSize || "—" },
             { label: qsTr("Features"), value: caps.length ? caps.join(", ") : "—" },
             { label: qsTr("UID"), value: c.uid || "—" }

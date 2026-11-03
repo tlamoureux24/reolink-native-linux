@@ -25,7 +25,6 @@ Dialog {
 
     signal openSettings(int row)
 
-    standardButtons: Dialog.Close
     background: Rectangle { color: Theme.surface; border.color: Theme.border; radius: Theme.radius }
 
     header: Item {
@@ -64,6 +63,20 @@ Dialog {
         Text { id: abTxt; anchors.centerIn: parent; text: parent.label; color: Theme.text; font.pixelSize: 12 }
         HoverHandler { id: abHover; enabled: parent.enabledBtn }
         TapHandler { enabled: parent.enabledBtn; onTapped: parent.clicked() }
+    }
+
+    // Our own Close button: the Basic style's button box paints its own
+    // light background under the sheet.
+    footer: Item {
+        implicitHeight: closeBtn.implicitHeight + dialog.bottomPadding
+        ActionButton {
+            id: closeBtn
+            anchors.right: parent.right
+            anchors.rightMargin: dialog.rightPadding
+            anchors.top: parent.top
+            label: qsTr("Close")
+            onClicked: dialog.close()
+        }
     }
 
     ColumnLayout {

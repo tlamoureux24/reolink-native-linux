@@ -15,6 +15,12 @@ std::atomic<int> AppSettings::s_talkGain{100};
 
 namespace {
 const auto kLanguage = QStringLiteral("app/language");
+const auto kTheme = QStringLiteral("app/theme");
+
+QString validTheme(const QString &t)
+{
+    return t == QLatin1String("light") || t == QLatin1String("system") ? t : QStringLiteral("dark");
+}
 const auto kHwDecode = QStringLiteral("app/hardwareDecoding");
 const auto kRecordings = QStringLiteral("app/recordingsDir");
 const auto kNotify = QStringLiteral("app/desktopNotifications");
@@ -29,6 +35,7 @@ AppSettings::AppSettings(QObject *parent)
 {
     QSettings s;
     m_language = s.value(kLanguage).toString();
+    m_theme = validTheme(s.value(kTheme).toString());
     // RL_HWDECODE=0 still forces software decode (diagnostics), as before.
     s_hardwareDecoding = s.value(kHwDecode, true).toBool() && qgetenv("RL_HWDECODE") != "0";
     s_desktopNotifications = s.value(kNotify, true).toBool();
@@ -133,6 +140,16 @@ void AppSettings::setDesktopNotifications(bool on)
     s_desktopNotifications = on;
     QSettings().setValue(kNotify, on);
     emit desktopNotificationsChanged();
+}
+
+void AppSettings::setTheme(const QString &theme)
+{
+    const QString t = validTheme(theme);
+    if (m_theme == t)
+        return;
+    m_theme = t;
+    QSettings().setValue(kTheme, t);
+    emit themeChanged();
 }
 
 void AppSettings::setCheckUpdates(bool on)

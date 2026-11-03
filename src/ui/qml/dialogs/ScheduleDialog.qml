@@ -32,6 +32,12 @@ Dialog {
 
     title: qsTr("Recording Schedule")
     background: Rectangle { color: Theme.surface; border.color: Theme.border; radius: Theme.radius }
+    // Themed title (the Basic style's header paints a light bar).
+    header: Text {
+        text: dlg.title
+        color: Theme.text; font.pixelSize: 15; font.bold: true
+        padding: Theme.spacing * 2
+    }
 
     function openFor(row, sched) {
         deviceRow = row;
@@ -129,7 +135,7 @@ Dialog {
                     var cw = width / 24, chh = height / 7;
                     for (var d = 0; d < 7; ++d)
                         for (var h = 0; h < 24; ++h) {
-                            ctx.fillStyle = dlg.cells[d * 24 + h] ? "#1d6faa" : "#151d26";
+                            ctx.fillStyle = dlg.cells[d * 24 + h] ? Theme.cellOn : Theme.cellOff;
                             ctx.fillRect(h * cw + 1, d * chh + 1, cw - 2, chh - 2);
                         }
                 }
