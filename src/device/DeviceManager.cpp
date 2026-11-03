@@ -7,6 +7,8 @@
 #include "media/StreamPlayer.h"
 #include "protocol/BaichuanClient.h"
 #include "protocol/BaichuanControl.h"
+#include "protocol/BcDevice.h"
+#include "protocol/BcSession.h"
 #include "protocol/ReolinkHttpClient.h"
 
 #include <QDateTime>
@@ -92,11 +94,17 @@ DeviceManager::DeviceManager(Database *db, CredentialStore *credentials, QObject
     m_pollTimer.setInterval(10000);
     connect(&m_pollTimer, &QTimer::timeout, this, &DeviceManager::pollDetections);
     m_pollTimer.start();
+
+    m_sessionTimer.setInterval(1000);
+    connect(&m_sessionTimer, &QTimer::timeout, this, &DeviceManager::watchSessions);
+    m_sessionTimer.start();
 }
 
 DeviceManager::~DeviceManager()
 {
     m_pending.waitForFinished();
+    for (const qint64 hostId : m_sessions.keys())
+        dropSession(hostId);
 }
 
 static QString detKey(qint64 hostId, int channel)
@@ -104,41 +112,8 @@ static QString detKey(qint64 hostId, int channel)
     return QString::number(hostId) + u':' + QString::number(channel);
 }
 
-void DeviceManager::applyConnectivity(qint64 hostId, bool transportOk,
-                                      const QHash<int, bool> &chanOnline)
+void DeviceManager::applyChannelStates(qint64 hostId, const QHash<int, bool> &chanOnline)
 {
-    // Host-level: three consecutive failed poll cycles (~30s) = unreachable;
-    // one success after that = recovered. Fires exactly once per transition.
-    int &fails = m_hostFails[hostId];
-    QString hostName;
-    for (const Entry &e : m_entries)
-        if (e.rec.id == hostId) { hostName = e.rec.name; break; }
-
-    if (!transportOk) {
-        if (++fails != 3)
-            return;
-        for (int i = 0; i < m_entries.size(); ++i) {
-            if (m_entries.at(i).rec.id != hostId || !m_entries.at(i).online)
-                continue;
-            m_entries[i].online = false;
-            m_entries[i].status = tr("unreachable");
-            emit dataChanged(index(i), index(i));
-        }
-        emit connectivityChanged(hostId, -1, hostName, false);
-        return;
-    }
-    if (fails >= 3) {
-        for (int i = 0; i < m_entries.size(); ++i) {
-            if (m_entries.at(i).rec.id != hostId || m_entries.at(i).online)
-                continue;
-            m_entries[i].online = true;
-            m_entries[i].status = tr("online");
-            emit dataChanged(index(i), index(i));
-        }
-        emit connectivityChanged(hostId, -1, hostName, true);
-    }
-    fails = 0;
-
     // Channel-level (NVRs): flip individual cameras that dropped or returned.
     for (auto it = chanOnline.constBegin(); it != chanOnline.constEnd(); ++it) {
         for (int i = 0; i < m_entries.size(); ++i) {
@@ -153,6 +128,47 @@ void DeviceManager::applyConnectivity(qint64 hostId, bool transportOk,
             }
             break;
         }
+    }
+}
+
+void DeviceManager::dropSession(qint64 hostId)
+{
+    const HostSession hs = m_sessions.take(hostId);
+    if (hs.session && hs.pushToken)
+        hs.session->removePushHandler(hs.pushToken);
+}
+
+void DeviceManager::watchSessions()
+{
+    // A session ends when the device stops answering (20 s of silence despite
+    // heartbeats, as the official SDK) or closes the connection: the host goes
+    // offline at once and is revalidated with the usual backoff.
+    const QList<qint64> hosts = m_sessions.keys();
+    for (const qint64 hostId : hosts) {
+        const HostSession hs = m_sessions.value(hostId);
+        if (hs.session->isAlive())
+            continue;
+        qCInfo(lcCore) << "host" << hostId << "lost:" << hs.session->error();
+        dropSession(hostId);
+        QString hostName;
+        for (int i = 0; i < m_entries.size(); ++i) {
+            Entry &e = m_entries[i];
+            if (e.rec.id != hostId)
+                continue;
+            hostName = e.rec.name;
+            if (!e.online)
+                continue;
+            e.online = false;
+            e.status = tr("unreachable");
+            e.problem = Problem::Unreachable;
+            emit dataChanged(index(i), index(i));
+        }
+        if (!m_lostHosts.contains(hostId)) {
+            m_lostHosts.insert(hostId);
+            emit connectivityChanged(hostId, -1, hostName, false);
+        }
+        m_retryDelaySecs[hostId] = 15;
+        validateAsync(hostId);
     }
 }
 
@@ -224,23 +240,8 @@ void DeviceManager::pollDetections()
                         api::command(QStringLiteral("GetAiState"), Json{{"channel", ch}}));
                 }
             }
-            // One channel-status query per NVR cycle: notices cameras that
-            // drop or return while the app is running.
-            const bool wantStatus = hp.channels.size() > 1;
-            if (wantStatus)
-                cmds.push_back(api::command(QStringLiteral("GetChannelstatus"), Json::object()));
+            // Online state comes from the host's Baichuan session, not from here.
             const api::BatchResult batch = hp.client->call(cmds);
-
-            QHash<int, bool> chanOnline; // parsed channel -> online (NVRs only)
-            if (batch.transportOk && wantStatus && batch.results.size() == items.size() + 1) {
-                const api::CommandResult &cs = batch.results.last();
-                if (cs.ok && cs.value.contains("status") && cs.value["status"].is_array())
-                    for (const auto &c : cs.value["status"]) {
-                        if (c.contains("channel"))
-                            chanOnline[c["channel"].get<int>()] =
-                                c.value("online", 1) != 0;
-                    }
-            }
 
             // Combine per-channel md/ai (results preserve request order).
             QHash<int, api::DetectionState> states;
@@ -264,9 +265,8 @@ void DeviceManager::pollDetections()
             const bool transportOk = batch.transportOk;
             QMetaObject::invokeMethod(
                 this,
-                [this, hostId, key, hp, states, transportOk, chanOnline] {
+                [this, hostId, key, hp, states, transportOk] {
                     m_pollInFlight[key] = false;
-                    applyConnectivity(hostId, transportOk, chanOnline);
                     if (!transportOk)
                         return;
                     for (int i = 0; i < hp.channels.size(); ++i) {
@@ -389,38 +389,37 @@ QHash<int, QByteArray> DeviceManager::roleNames() const
 void DeviceManager::testDevice(const QString &addr, const QString &username,
                                const QString &password, bool https, int port)
 {
-    const int portv = port > 0 ? port : (https ? 443 : 80);
-    m_pending.addFuture(QtConcurrent::run([this, addr, username, password, https, portv] {
-        ReolinkHttpClient client(addr, portv, https, username, password);
-        const api::BatchResult b =
-            client.call(Json::array({api::command(QStringLiteral("GetDevInfo"))}));
-
-        bool ok = false;
-        QString name, model, message;
-        if (b.transportOk && !b.results.isEmpty() && b.results.first().ok) {
-            const Json info = jsonObj(b.results.first().value, "DevInfo");
-            name = QString::fromStdString(jsonStr(info, "name"));
-            model = QString::fromStdString(jsonStr(info, "model"));
-            ok = true;
-        } else if (!b.error.isEmpty()) {
-            message = b.error;
-        } else if (b.transportOk && !b.results.isEmpty()) {
-            message = b.results.first().detail;
+    Q_UNUSED(https)
+    Q_UNUSED(port)
+    m_pending.addFuture(QtConcurrent::run([this, addr, username, password] {
+        // Log in over Baichuan, as the device will be used, and read its name.
+        BcSession::Params sp;
+        sp.target = {addr, 9000, QString(), false};
+        sp.username = username;
+        sp.password = password;
+        const std::shared_ptr<BcSession> session = BcSession::acquire(sp);
+        bool ok = session->waitReady(15000);
+        QString name, model, message, problem;
+        if (ok) {
+            bcdev::Device d;
+            QByteArray xml;
+            quint16 status = 0;
+            ok = session->requestXml(80, 250, {}, {}, &xml, &status) && status == 200;
+            if (ok) {
+                bcdev::parseVersionInfo(xml, d);
+                name = d.name;
+                model = d.model;
+            } else {
+                message = tr("the device did not answer like a Reolink camera or NVR");
+                problem = QStringLiteral("protocol");
+            }
+        } else if (session->failure() == BcSession::Failure::Rejected) {
+            message = tr("login rejected — check the user name and password");
+            problem = QStringLiteral("auth");
+        } else {
+            message = tr("no answer on port 9000 — is it a Reolink camera or NVR?");
+            problem = QStringLiteral("transport");
         }
-        if (!ok && message.isEmpty())
-            message = tr("the device did not answer like a Reolink camera or NVR");
-
-        QString problem;
-        switch (client.lastFailKind()) {
-        case ReolinkHttpClient::FailKind::Transport: problem = QStringLiteral("transport"); break;
-        case ReolinkHttpClient::FailKind::Auth: problem = QStringLiteral("auth"); break;
-        case ReolinkHttpClient::FailKind::Locked: problem = QStringLiteral("locked"); break;
-        case ReolinkHttpClient::FailKind::Protocol: problem = QStringLiteral("protocol"); break;
-        case ReolinkHttpClient::FailKind::None: break;
-        }
-        if (!ok && problem.isEmpty())
-            problem = QStringLiteral("protocol");
-
         QMetaObject::invokeMethod(
             this,
             [this, ok, message, name, model, problem] {
@@ -558,6 +557,8 @@ void DeviceManager::removeDevice(int row)
             endRemoveRows();
         }
     }
+    dropSession(id);
+    m_lostHosts.remove(id);
     m_db->removeHost(id);
     m_credentials->remove(id);
     emit countChanged();
@@ -618,6 +619,30 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
     m_nextRetryAt.remove(hostId);
     m_retryDelaySecs.remove(hostId);
 
+    // The host's session from now on; an NVR pushes its channels' states on it.
+    dropSession(hostId);
+    HostSession hs;
+    hs.session = v.session;
+    if (v.session && v.channelNum > 1) {
+        const std::weak_ptr<BcSession> weak = v.session;
+        hs.pushToken = v.session->addPushHandler([this, hostId, weak](const BcMessage &m) {
+            if (m.cmd != 145)
+                return;
+            const auto s = weak.lock();
+            if (!s)
+                return;
+            QHash<int, bool> states;
+            for (const auto &st : bcdev::parseChannelStates(s->bodyXml(m)))
+                states.insert(st.first, st.second);
+            QMetaObject::invokeMethod(
+                this, [this, hostId, states] { applyChannelStates(hostId, states); },
+                Qt::QueuedConnection);
+        });
+    }
+    if (hs.session)
+        m_sessions.insert(hostId, hs);
+    const bool recovered = m_lostHosts.remove(hostId);
+
     // Update the host record (name/model/kind), persist once.
     if (!v.hostName.isEmpty())
         rec.name = v.hostName;
@@ -662,6 +687,8 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         m_entries.insert(first + j, fresh.at(j));
     endInsertRows();
     emit countChanged();
+    if (recovered)
+        emit connectivityChanged(hostId, -1, rec.name, true);
 }
 
 void DeviceManager::postValidation(qint64 hostId, const Validation &v)
@@ -718,133 +745,67 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
             return;
         }
 
-        auto client = std::make_shared<ReolinkHttpClient>(rec.addr, rec.port, rec.https,
-                                                          rec.username, password);
-        // Phase 1: device info, ch0 encoding, abilities, battery, and the NVR
-        // channel list.
-        const api::BatchResult b1 = client->call(Json::array({
-            api::command(QStringLiteral("GetDevInfo")),
-            api::command(QStringLiteral("GetEnc"), Json{{"channel", 0}}, 1),
-            api::command(QStringLiteral("GetAbility"),
-                         Json{{"User", {{"userName", rec.username.toStdString()}}}}),
-            api::command(QStringLiteral("GetBatteryInfo"), Json{{"channel", 0}}),
-            api::command(QStringLiteral("GetChannelstatus")),
-        }));
+        // The device's session, as the official client opens it (BCSDK_Open):
+        // log in over Baichuan, then read what it is and can do.
+        BcSession::Params sp;
+        sp.target = {rec.addr, 9000, QString(), false};
+        sp.username = rec.username;
+        sp.password = password;
+        const std::shared_ptr<BcSession> session = BcSession::acquire(sp);
+        bcdev::Device d;
+        const bool ok = session->waitReady(15000) && bcdev::readDevice(*session, rec.username, &d);
 
         Validation v;
         v.password = password;
-        v.status = tr("unreachable");
-        api::Capabilities caps;
-        QVector<api::ChannelInfo> channels;
-        QString ch0codec = QStringLiteral("h264");
-        QSize ch0MainSize, ch0SubSize;
-
-        if (b1.transportOk) {
-            for (const api::CommandResult &r : b1.results) {
-                if (r.cmd == QLatin1String("GetDevInfo") && r.ok) {
-                    const Json info = jsonObj(r.value, "DevInfo");
-                    v.hostName = QString::fromStdString(jsonStr(info, "name"));
-                    v.model = QString::fromStdString(jsonStr(info, "model"));
-                    v.channelNum = jsonInt(info, "channelNum", 1);
-                    v.online = true;
-                    v.status = tr("online");
-                    v.client = client;
-                } else if (r.cmd == QLatin1String("GetEnc") && r.ok) {
-                    const Json enc = jsonObj(r.value, "Enc");
-                    ch0codec = normalizeCodec(QString::fromStdString(
-                        jsonStr(jsonObj(enc, "mainStream"), "vType")));
-                    ch0MainSize = encStreamSize(enc, "mainStream");
-                    ch0SubSize = encStreamSize(enc, "subStream");
-                } else if (r.cmd == QLatin1String("GetAbility") && r.ok) {
-                    caps = api::parseAbility(r.value);
-                } else if (r.cmd == QLatin1String("GetBatteryInfo") && r.ok) {
-                    v.battery = api::parseBatteryInfo(r.value);
-                } else if (r.cmd == QLatin1String("GetChannelstatus") && r.ok) {
-                    channels = api::parseChannelStatus(r.value);
-                }
+        if (!ok) {
+            // Unreachable is retried with backoff; a rejected login waits for
+            // the user (each try burns the firmware's lockout counter).
+            if (session->failure() == BcSession::Failure::Rejected) {
+                v.status = tr("login rejected — check the user name and password");
+                v.problem = Problem::Auth;
+            } else {
+                v.status = tr("unreachable");
+                v.problem = Problem::Unreachable;
             }
-        }
-        if (!v.online) {
-            if (!b1.error.isEmpty())
-                v.status = b1.error;
-            // The client knows WHY: transport failures are retried with
-            // backoff; auth failures wait for the user (lockout counter).
-            switch (client->lastFailKind()) {
-            case ReolinkHttpClient::FailKind::Auth: v.problem = Problem::Auth; break;
-            case ReolinkHttpClient::FailKind::Locked: v.problem = Problem::Locked; break;
-            default: v.problem = Problem::Unreachable; break;
-            }
+            qCInfo(lcCore) << "host" << hostId << "not validated:" << session->error();
             postValidation(hostId, v);
             return;
         }
+        v.online = true;
+        v.status = tr("online");
         v.problem = Problem::None;
-        v.isAdmin = caps.isAdmin;
-
-        auto capsFor = [&](int ch) {
-            return ch >= 0 && ch < caps.channels.size() ? caps.channels[ch] : api::ChannelCaps{};
-        };
-
-        if (v.channelNum <= 1) {
-            // Standalone camera: a single channel 0.
+        v.session = session;
+        // Features not moved to Baichuan yet still use the HTTP API.
+        v.client = std::make_shared<ReolinkHttpClient>(rec.addr, rec.port, rec.https,
+                                                       rec.username, password);
+        v.hostName = d.name;
+        v.model = d.model;
+        v.channelNum = d.channelNum;
+        v.isAdmin = d.isAdmin;
+        v.battery = d.battery;
+        // A camera is its channel 0; an NVR shows its online channels.
+        for (const bcdev::Channel &c : d.channels) {
+            if (d.isNvr && !c.online)
+                continue;
+            ChannelResult cr;
+            cr.channel = c.channel;
+            cr.name = c.name.isEmpty() ? d.name : c.name;
+            cr.online = true;
+            cr.mainSize = c.mainSize;
+            cr.subSize = c.subSize;
+            cr.caps = c.caps;
+            // The codec is in every frame's header; the stream is probed.
+            cr.codec.clear();
+            v.talk = v.talk || cr.caps.talk;
+            v.channels.append(cr);
+        }
+        if (v.channels.isEmpty()) {
+            // NVR reachable but no online cameras yet — keep a placeholder.
             ChannelResult cr;
             cr.channel = 0;
-            cr.name = v.hostName;
-            cr.online = true;
-            cr.codec = ch0codec;
-            cr.mainSize = ch0MainSize;
-            cr.subSize = ch0SubSize;
-            cr.caps = capsFor(0);
-            v.talk = cr.caps.talk;
+            cr.name = d.name;
+            cr.online = false;
             v.channels.append(cr);
-        } else {
-            // NVR: one entry per ONLINE channel. Phase 2 fetches each channel's
-            // main-stream codec (main can be h265 while sub is h264).
-            QVector<api::ChannelInfo> online;
-            for (const api::ChannelInfo &c : channels)
-                if (c.online)
-                    online.append(c);
-
-            QHash<int, QString> codecByChannel;
-            QHash<int, QSize> mainSizeByChannel;
-            QHash<int, QSize> subSizeByChannel;
-            if (!online.isEmpty()) {
-                Json encCmds = Json::array();
-                for (const api::ChannelInfo &c : online)
-                    encCmds.push_back(
-                        api::command(QStringLiteral("GetEnc"), Json{{"channel", c.channel}}, 1));
-                const api::BatchResult b2 = client->call(encCmds);
-                if (b2.transportOk)
-                    for (const api::CommandResult &r : b2.results)
-                        if (r.cmd == QLatin1String("GetEnc") && r.ok) {
-                            const Json enc = jsonObj(r.value, "Enc");
-                            const int ch = jsonInt(enc, "channel", 0);
-                            codecByChannel[ch] = normalizeCodec(QString::fromStdString(
-                                jsonStr(jsonObj(enc, "mainStream"), "vType")));
-                            mainSizeByChannel[ch] = encStreamSize(enc, "mainStream");
-                            subSizeByChannel[ch] = encStreamSize(enc, "subStream");
-                        }
-            }
-            for (const api::ChannelInfo &c : online) {
-                ChannelResult cr;
-                cr.channel = c.channel;
-                cr.name = c.name;
-                cr.online = true;
-                cr.codec = codecByChannel.value(c.channel, QStringLiteral("h264"));
-                cr.mainSize = mainSizeByChannel.value(c.channel);
-                cr.subSize = subSizeByChannel.value(c.channel);
-                cr.uid = c.uid;
-                cr.caps = capsFor(c.channel);
-                v.talk = v.talk || cr.caps.talk;
-                v.channels.append(cr);
-            }
-            if (v.channels.isEmpty()) {
-                // NVR reachable but no online cameras yet — keep a placeholder.
-                ChannelResult cr;
-                cr.channel = 0;
-                cr.name = v.hostName;
-                cr.online = false;
-                v.channels.append(cr);
-            }
         }
         postValidation(hostId, v);
     }));

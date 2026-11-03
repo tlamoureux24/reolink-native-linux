@@ -33,6 +33,7 @@ namespace rl {
 // violation (GCC 16 reports it as -Wsfinae-incomplete) and it left the
 // registered metatype without its PointerToQObject flag.
 class BaichuanClient;
+class BcSession;
 class ReolinkHttpClient;
 }
 
@@ -357,6 +358,7 @@ private:
         QString password;
         api::BatteryInfo battery;
         std::shared_ptr<ReolinkHttpClient> client;
+        std::shared_ptr<BcSession> session;
         QVector<ChannelResult> channels; // one per camera to show
     };
 
@@ -367,7 +369,10 @@ private:
                        bool storeNew = false);
     int rowForHostId(qint64 hostId) const;
     void warmPushCache();   // fetch each camera's push state once, staggered
-    void applyConnectivity(qint64 hostId, bool transportOk, const QHash<int, bool> &chanOnline);
+    // An NVR's channels that dropped or returned (its cmd 145 pushes).
+    void applyChannelStates(qint64 hostId, const QHash<int, bool> &chanOnline);
+    // Every second: a host whose session ended goes offline and is revalidated.
+    void watchSessions();
     // Shared body of startBaichuanPlayback/startBaichuanLive (startEpoch<=0 = live).
     void startBaichuan(int row, qint64 startEpoch, rl::StreamPlayer *player, bool mainStream);
     void applyValidation(qint64 hostId, const Validation &v);
@@ -384,7 +389,17 @@ private:
     QHash<QString, api::DetectionState> m_lastDetection; // for 0->1 edge detection
     QHash<QString, bool> m_pollInFlight;                 // avoid overlapping polls
     QHash<int, int> m_pushEnabled;  // row -> push enable (1/0/-1) for notif gating
-    QHash<qint64, int> m_hostFails; // consecutive poll transport failures per host
+    // Each host's Baichuan session, as in the official client: everything about
+    // the device goes through it, and its end is how the client notices a lost
+    // device. pushToken: the handler for its pushes (NVR channel states).
+    struct HostSession {
+        std::shared_ptr<BcSession> session;
+        int pushToken = 0;
+    };
+    QHash<qint64, HostSession> m_sessions;
+    void dropSession(qint64 hostId);
+    QSet<qint64> m_lostHosts;       // hosts whose session ended, announced offline
+    QTimer m_sessionTimer;
     bool m_pushWarmed = false;      // one-time warm of the push cache after priming
 
     // Auto-retry of Unreachable hosts, driven by the poll tick. Backoff doubles

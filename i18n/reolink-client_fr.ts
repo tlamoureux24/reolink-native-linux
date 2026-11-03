@@ -145,6 +145,57 @@
     </message>
 </context>
 <context>
+    <name>BcLink</name>
+    <message>
+        <location filename="../src/protocol/BcLink.cpp" line="+69" />
+        <source>couldn't reach the device</source>
+        <translation>impossible de joindre l'appareil</translation>
+    </message>
+</context>
+<context>
+    <name>BcUdpLink</name>
+    <message>
+        <location filename="../src/protocol/BcUdpLink.cpp" line="+176" />
+        <source>couldn't open a UDP socket</source>
+        <translation>impossible d'ouvrir un socket UDP</translation>
+    </message>
+    <message>
+        <location line="+121" />
+        <source>the camera isn't reachable through Reolink's servers (offline, or UID access disabled)</source>
+        <translation>la caméra n'est pas joignable via les serveurs Reolink (hors ligne, ou accès par UID désactivé)</translation>
+    </message>
+    <message>
+        <location line="+2" />
+        <source>the camera didn't answer on the local network</source>
+        <translation>la caméra n'a pas répondu sur le réseau local</translation>
+    </message>
+    <message>
+        <location line="+2" />
+        <source>Reolink's servers didn't answer</source>
+        <translation>les serveurs Reolink n'ont pas répondu</translation>
+    </message>
+    <message>
+        <location line="+2" />
+        <source>no network path to the camera was found</source>
+        <translation>aucun chemin réseau vers la caméra n'a été trouvé</translation>
+    </message>
+    <message>
+        <location line="+150" />
+        <source>cancelled</source>
+        <translation>annulé</translation>
+    </message>
+    <message>
+        <location line="+82" />
+        <source>the connection to the camera was lost</source>
+        <translation>la connexion à la caméra a été perdue</translation>
+    </message>
+    <message>
+        <location line="+55" />
+        <source>the camera closed the connection</source>
+        <translation>la caméra a fermé la connexion</translation>
+    </message>
+</context>
+<context>
     <name>CameraComboBox</name>
     <message>
         <location filename="../src/ui/qml/components/CameraComboBox.qml" line="+30" />
@@ -389,7 +440,7 @@
 <context>
     <name>DeviceSettingsPage</name>
     <message>
-        <location filename="../src/ui/qml/pages/DeviceSettingsPage.qml" line="+45" />
+        <location filename="../src/ui/qml/pages/DeviceSettingsPage.qml" line="+48" />
         <source>Image</source>
         <translation>Image</translation>
     </message>
@@ -445,13 +496,13 @@
     </message>
     <message>
         <location line="+52" />
-        <location line="+1151" />
+        <location line="+1155" />
         <location line="+64" />
         <source>Loading…</source>
         <translation>Chargement…</translation>
     </message>
     <message>
-        <location line="-1189" />
+        <location line="-1193" />
         <source>Select a device</source>
         <translation>Choisir un appareil</translation>
     </message>
@@ -461,7 +512,7 @@
         <translation>%1 indisponible sur cet appareil</translation>
     </message>
     <message>
-        <location line="+16" />
+        <location line="+20" />
         <source>%1 saved</source>
         <translation>%1 enregistré</translation>
     </message>
@@ -1327,7 +1378,7 @@
 <context>
     <name>LivePane</name>
     <message>
-        <location filename="../src/ui/qml/components/LivePane.qml" line="+408" />
+        <location filename="../src/ui/qml/components/LivePane.qml" line="+409" />
         <source>No camera</source>
         <translation>Aucune caméra</translation>
     </message>
@@ -1436,7 +1487,7 @@
 <context>
     <name>LiveViewPage</name>
     <message>
-        <location filename="../src/ui/qml/pages/LiveViewPage.qml" line="+256" />
+        <location filename="../src/ui/qml/pages/LiveViewPage.qml" line="+262" />
         <source>Single pane</source>
         <translation>Une caméra</translation>
     </message>
@@ -1474,7 +1525,7 @@
         <translation>Reolink Client</translation>
     </message>
     <message>
-        <location line="+84" />
+        <location line="+88" />
         <source>Downloading update… %1%</source>
         <translation>Téléchargement de la mise à jour… %1 %</translation>
     </message>
@@ -2478,61 +2529,71 @@ Cliquez sur + pour en ajouter un.</translation>
 <context>
     <name>rl::DeviceManager</name>
     <message>
-        <location filename="../src/device/DeviceManager.cpp" line="+78" />
-        <location line="+462" />
-        <location line="+418" />
+        <location filename="../src/device/DeviceManager.cpp" line="+80" />
+        <location line="+459" />
+        <location line="+380" />
         <source>ready</source>
         <translation>prêt</translation>
     </message>
     <message>
-        <location line="-880" />
-        <location line="+366" />
+        <location line="-839" />
+        <location line="+363" />
         <location line="+26" />
         <location line="+29" />
-        <location line="+459" />
+        <location line="+421" />
         <source>connecting…</source>
         <translation>connexion…</translation>
     </message>
     <message>
-        <location line="-834" />
-        <location line="+612" />
+        <location line="-757" />
+        <location line="+605" />
         <source>unreachable</source>
         <translation>injoignable</translation>
     </message>
     <message>
-        <location line="-601" />
-        <location line="+15" />
-        <location line="+488" />
+        <location line="-642" />
+        <location line="+538" />
         <location line="+112" />
-        <location line="+206" />
+        <location line="+142" />
         <source>online</source>
         <translation>en ligne</translation>
     </message>
     <message>
-        <location line="-806" />
-        <location line="+488" />
-        <location line="+318" />
+        <location line="-792" />
+        <location line="+538" />
+        <location line="+254" />
         <source>offline</source>
         <translation>hors ligne</translation>
     </message>
     <message>
-        <location line="-545" />
+        <location line="-504" />
         <source>the device did not answer like a Reolink camera or NVR</source>
         <translation>l'appareil n'a pas répondu comme une caméra ou un NVR Reolink</translation>
     </message>
     <message>
-        <location line="+304" />
+        <location line="+4" />
+        <location line="+347" />
+        <source>login rejected — check the user name and password</source>
+        <translation>connexion refusée — vérifiez le nom d'utilisateur et le mot de passe</translation>
+    </message>
+    <message>
+        <location line="-344" />
+        <source>no answer on port 9000 — is it a Reolink camera or NVR?</source>
+        <translation>pas de réponse sur le port 9000 — est-ce bien une caméra ou un NVR Reolink ?</translation>
+    </message>
+    <message>
+        <location line="+322" />
         <source>keyring unavailable — password not saved</source>
         <translation>trousseau indisponible — mot de passe non enregistré</translation>
     </message>
     <message>
-        <location line="+199" />
+        <location line="+133" />
         <location line="+53" />
         <location line="+21" />
         <location line="+72" />
         <location line="+149" />
         <location line="+74" />
-        <location line="+172" />
+        <location line="+175" />
         <location line="+3" />
         <location line="+79" />
         <location line="+131" />
@@ -2540,14 +2601,14 @@ Cliquez sur + pour en ajouter un.</translation>
         <translation>appareil pas prêt</translation>
     </message>
     <message>
-        <location line="-691" />
-        <location line="+571" />
+        <location line="-694" />
+        <location line="+574" />
         <location line="+144" />
         <source>failed</source>
         <translation>échec</translation>
     </message>
     <message>
-        <location line="-676" />
+        <location line="-679" />
         <source>snapshot failed</source>
         <translation>échec de la capture</translation>
     </message>
@@ -2591,7 +2652,7 @@ Cliquez sur + pour en ajouter un.</translation>
         <translation>aucun enregistrement à ce moment</translation>
     </message>
     <message>
-        <location line="+150" />
+        <location line="+153" />
         <source>settings fetch failed</source>
         <translation>échec de la lecture des réglages</translation>
     </message>

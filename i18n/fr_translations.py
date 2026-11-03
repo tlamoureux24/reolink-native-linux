@@ -428,6 +428,19 @@ FR = {
     "online": "en ligne",
     "offline": "hors ligne",
     "the device did not answer like a Reolink camera or NVR": "l'appareil n'a pas répondu comme une caméra ou un NVR Reolink",
+    # ---- Remote access (P2P transport) ----
+    "couldn't open a UDP socket": "impossible d'ouvrir un socket UDP",
+    "the camera isn't reachable through Reolink's servers (offline, or UID access disabled)":
+        "la caméra n'est pas joignable via les serveurs Reolink (hors ligne, ou accès par UID désactivé)",
+    "the camera didn't answer on the local network": "la caméra n'a pas répondu sur le réseau local",
+    "Reolink's servers didn't answer": "les serveurs Reolink n'ont pas répondu",
+    "no network path to the camera was found": "aucun chemin réseau vers la caméra n'a été trouvé",
+    "cancelled": "annulé",
+    "the camera closed the connection": "la caméra a fermé la connexion",
+    "login rejected — check the user name and password":
+        "connexion refusée — vérifiez le nom d'utilisateur et le mot de passe",
+    "no answer on port 9000 — is it a Reolink camera or NVR?":
+        "pas de réponse sur le port 9000 — est-ce bien une caméra ou un NVR Reolink ?",
     "keyring unavailable — password not saved": "trousseau indisponible — mot de passe non enregistré",
     "device not ready": "appareil pas prêt",
     "failed": "échec",

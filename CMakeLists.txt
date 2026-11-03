@@ -35,6 +35,11 @@ add_library(reolink_core STATIC
     src/protocol/ReolinkApi.h src/protocol/ReolinkApi.cpp
     src/protocol/ReolinkHttpClient.h src/protocol/ReolinkHttpClient.cpp
     src/protocol/BcCrypto.h src/protocol/BcCrypto.cpp
+    src/protocol/BcLink.h src/protocol/BcLink.cpp
+    src/protocol/BcUdp.h src/protocol/BcUdp.cpp
+    src/protocol/BcUdpLink.h src/protocol/BcUdpLink.cpp
+    src/protocol/BcSession.h src/protocol/BcSession.cpp
+    src/protocol/BcDevice.h src/protocol/BcDevice.cpp
     src/protocol/BaichuanClient.h src/protocol/BaichuanClient.cpp
     src/protocol/BaichuanControl.h src/protocol/BaichuanControl.cpp
     src/device/DeviceManager.h src/device/DeviceManager.cpp
@@ -148,11 +153,16 @@ foreach(sz 16 24 32 48 64 128 256 512)
             RENAME io.github.todesengelx.ReolinkLinux.png)
 endforeach()
 
+# Diagnostic: talk to one device over Baichuan from the command line, without
+# the GUI. Not installed.
+qt_add_executable(bc-probe tools/bc-probe.cpp)
+target_link_libraries(bc-probe PRIVATE reolink_core)
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 enable_testing()
-foreach(t IN ITEMS test_protocol test_database test_singleinstance test_tls test_playback_pacing)
+foreach(t IN ITEMS test_protocol test_database test_singleinstance test_tls test_playback_pacing test_p2p)
     qt_add_executable(${t} tests/${t}.cpp)
     target_link_libraries(${t} PRIVATE reolink_core Qt6::Test)
     add_test(NAME ${t} COMMAND ${t})
