@@ -33,6 +33,23 @@ Rectangle {
     property bool capFloodlight: false
     property bool capTalk: false
     property bool talkActive: false
+    property bool talkStarting: false
+    Connections {
+        target: Devices
+        function onTalkStateChanged(row, active, error) {
+            if (row !== root.talkRow) return;
+            root.talkStarting = false;
+            root.talkActive = active;
+        }
+    }
+    property int talkRow: -1   // the camera the microphone is going to
+    // Leaving the pane (camera swap, page change) must not leave the mic open.
+    function endTalk() {
+        if (talkActive || talkStarting)
+            Devices.stopTalk(talkRow);
+        talkActive = false;
+        talkStarting = false;
+    }
     property bool floodOn: false // white-LED/floodlight on state (optimistic)
 
     // User stream-quality preference: false = Fluent (sub), true = Clear (main).
@@ -44,17 +61,17 @@ Rectangle {
     readonly property bool effectiveMain: qualityMain
     onForceMainChanged: qualityMain = forceMain
     readonly property bool hasSource: deviceRow >= 0
-    // What this pane is currently streaming: an RTSP URL, or "bc:<row>" for native
-    // Baichuan HD live. HD (main) live goes over Baichuan because the NVR's RTSP
-    // output for 8K duo main streams is itself corrupt (verified against raw
-    // captures) — the official clients use Baichuan for live too. The grid's sub
-    // streams stay RTSP (clean, and the NVR only allows ~1 Baichuan session).
+    // What this pane is currently streaming: "bc:<row>:main|sub" — live inside
+    // the device's Baichuan session, as the official client does (one session
+    // per device, every stream in it) — or the URL of a plain stream device.
     property string streamKey: ""
-    property bool bcFallback: false // Baichuan slot busy → RTSP main for this round
 
     // These carry the DEVICE ROW, not the pane index: the page tracks which
     // camera is maximized/selected, so both survive a rearrange.
     signal toggleMaximize(int index)
+    // Sound: the page keeps at most one pane audible (DESIGN §5.3).
+    property bool audioOn: false
+    signal audioToggled(int index)
     signal clicked(int index)
     signal popOut(int deviceRow, string label)
     // A camera was dropped onto this pane — from the sidebar or another pane.
@@ -105,8 +122,11 @@ Rectangle {
         var want = deviceRow >= 0 && visible && pageActive;
         var key = "";
         if (want) {
-            if (effectiveMain && !bcFallback)
-                key = "bc:" + deviceRow;
+            // In the device's session: streams while it is online, starts
+            // again when it comes back.
+            if (Devices.usesBaichuanAt(deviceRow))
+                key = Devices.isOnlineAt(deviceRow)
+                    ? "bc:" + deviceRow + (effectiveMain ? ":main" : ":sub") : "";
             else
                 key = Devices.liveUrl(deviceRow, effectiveMain);
         }
@@ -117,7 +137,7 @@ Rectangle {
             player.stop();
         } else if (key.substring(0, 3) === "bc:") {
             player.loop = false;
-            Devices.startBaichuanLive(root.deviceRow, player, true);
+            Devices.startBaichuanLive(root.deviceRow, player, key.endsWith(":main"));
         } else {
             // Set loop before start() so the worker sees the right value from
             // frame one (the declarative `loop:` binding can lag the handler).
@@ -132,21 +152,22 @@ Rectangle {
     }
     // A pane pointed at a different camera must let the old one go now — its
     // session is wanted elsewhere (a swap hands it straight to another pane).
-    onDeviceRowChanged: { bcFallback = false; releaseStream(); updateSource(); }
+    onDeviceRowChanged: { endTalk(); releaseStream(); updateSource(); }
     onVisibleChanged: updateSource()
     onPageActiveChanged: updateSource()
-    onEffectiveMainChanged: { bcFallback = false; updateSource(); }
+    onEffectiveMainChanged: updateSource()
     Component.onCompleted: updateSource()
 
-    // The NVR grants only ~1 Baichuan session. If HD live can't get the slot,
-    // fall back to RTSP main once (artifact-prone on 8K duos, but beats a dead
-    // pane); the next SD/HD flip or camera change retries Baichuan.
-    Connections {
-        target: player
-        function onStateChanged() {
-            if (player.state === StreamPlayer.Error && !root.bcFallback
-                && root.streamKey.substring(0, 3) === "bc:") {
-                root.bcFallback = true;
+    // A live stream that ended (no media for 20 s, or refused) starts over
+    // while its device is online.
+    Timer {
+        interval: 5000
+        repeat: true
+        running: root.streamKey.substring(0, 3) === "bc:"
+        onTriggered: {
+            if ((player.state === StreamPlayer.Error || player.state === StreamPlayer.Stopped)
+                && Devices.isOnlineAt(root.deviceRow)) {
+                root.streamKey = "";
                 root.updateSource();
             }
         }
@@ -164,9 +185,13 @@ Rectangle {
     StreamPlayer {
         id: player
         videoSink: video.videoSink
+        // Muted while this pane talks (default): the camera hearing itself
+        // through the PC loops into feedback.
+        audioEnabled: root.audioOn && !((root.talkActive || root.talkStarting) && AppSettings.muteWhileTalking)
+        volume: (typeof liveAudioRow !== "undefined" && liveAudioRow >= 0) ? 0 : 1 // test hook
     }
 
-    Component.onDestruction: player.stop()
+    Component.onDestruction: { endTalk(); player.stop(); }
 
     // ---- Drag and drop -----------------------------------------------------
     // Dropping a camera here re-points this cell at it. Nothing needs to stop
@@ -403,8 +428,14 @@ Rectangle {
         sourceComponent: PtzPad {
             deviceRow: root.deviceRow
             showZoom: root.capZoom
+            // Test hook (RL_LIVE_PTZ): show the advanced panel too.
+            Component.onCompleted: if (typeof livePtzRow !== "undefined" && livePtzRow === deviceRow)
+                                       openPanel()
         }
     }
+    // Test hook (RL_LIVE_PTZ): open the pad once capabilities are known.
+    onCapPtzChanged: if (capPtz && typeof livePtzRow !== "undefined" && livePtzRow === deviceRow)
+                         ptzOpen = true
 
     // ---- Floating toolbar (hover) -----------------------------------------
     HoverHandler { id: paneHover }
@@ -466,6 +497,15 @@ Rectangle {
                 active: root.qualityMain
                 onActivated: root.qualityMain = !root.qualityMain
             }
+            // Sound for this camera (mutes whichever pane had it). Disabled until
+            // the stream turns out to carry audio.
+            ToolButton {
+                glyph: root.audioOn ? "🔊" : "🔇"; active: root.audioOn
+                enabledTool: player.hasAudio
+                tip: !player.hasAudio ? qsTr("No sound on this stream")
+                     : root.audioOn ? qsTr("Mute") : qsTr("Listen")
+                onActivated: root.audioToggled(root.deviceRow)
+            }
             ToolButton {
                 glyph: "◉"; enabledTool: true
                 tip: qsTr("Save snapshot")
@@ -488,13 +528,22 @@ Rectangle {
                 tip: qsTr("PTZ controls")
                 onActivated: root.ptzOpen = !root.ptzOpen
             }
-            // Two-way talk (push-to-hold). Baichuan talk path is the primary
-            // transport (DESIGN §5.4) and wires in with the M12 protocol work;
-            // this toggles the UI state and mic intent today.
+            // Two-way talk over Baichuan (cmd 201/202/11): click to talk, click
+            // again to stop. The camera's own sound keeps playing meanwhile
+            // (full duplex), so turn the speaker on to hear the answer.
             ToolButton {
-                glyph: "🎙"; active: root.talkActive; enabledTool: root.capTalk
-                tip: qsTr("Two-way talk (coming soon)")
-                onActivated: root.talkActive = !root.talkActive
+                glyph: "🎙"; active: root.talkActive || root.talkStarting; enabledTool: root.capTalk
+                tip: root.talkActive ? qsTr("Stop talking")
+                     : root.talkStarting ? qsTr("Connecting…") : qsTr("Talk through the camera")
+                onActivated: {
+                    if (root.talkActive || root.talkStarting) {
+                        root.endTalk();
+                    } else {
+                        root.talkStarting = true;
+                        root.talkRow = root.deviceRow;
+                        Devices.startTalk(root.deviceRow);
+                    }
+                }
             }
             ToolButton {
                 glyph: "📢"; enabledTool: root.capSiren

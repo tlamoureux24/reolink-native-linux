@@ -1,8 +1,14 @@
 #include "media/BcMediaParser.h"
 #include "protocol/BcCrypto.h"
+#include "protocol/BcDevice.h"
+#include "protocol/BcRecordings.h"
 #include "protocol/ReolinkApi.h"
 
+#include "media/ImaAdpcm.h"
+#include "protocol/BaichuanControl.h"
+
 #include <QtTest>
+#include <cmath>
 
 static void putLE32(QByteArray &b, quint32 v)
 {
@@ -19,200 +25,101 @@ class TestProtocol : public QObject
     Q_OBJECT
 
 private slots:
-    void loginBodyShape()
+    void bcRecordings()
     {
-        const Json body = api::loginBody(QStringLiteral("admin"), QStringLiteral("pw123"));
-        QVERIFY(body.is_array());
-        QCOMPARE(body.size(), std::size_t(1));
-        const Json &cmd = body.front();
-        QCOMPARE(cmd.value("cmd", std::string{}), std::string("Login"));
-        QCOMPARE(cmd.value("action", -1), 0);
-        const Json user = cmd["param"]["User"];
-        QCOMPARE(user.value("userName", std::string{}), std::string("admin"));
-        QCOMPARE(user.value("password", std::string{}), std::string("pw123"));
-        QCOMPARE(user.value("Version", std::string{}), std::string("0"));
+        // Trimmed cmd 142 / cmd 15 replies of an RLC-823A.
+        const QByteArray days =
+            "<DayRecords version=\"1.1\"><DayRecordList><DayRecord><index>0</index><channelId>0</channelId>"
+            "<dayTypeList><dayType><index>0</index><type>normal</type></dayType>"
+            "<dayType><index>1</index><type>normal</type></dayType></dayTypeList></DayRecord></DayRecordList></DayRecords>";
+        QCOMPARE(bcrec::parseRecordDays(days), (QVector<int>{1, 2}));
+        QVERIFY(bcrec::parseRecordDays("<DayRecords><dayTypeList /></DayRecords>").isEmpty());
+
+        const QByteArray page =
+            "<FileInfoList version=\"1.1\"><FileInfo><channelId>0</channelId><handle>3</handle>"
+            "<name>0120261102072209</name><Id>/mnt/sda/Mp4Record/2026-11-02/RecS02_20261102_072209_072239_1_2.mp4</Id>"
+            "<streamType>subStream</streamType><recordType>people</recordType>"
+            "<startTime><year>2026</year><month>11</month><day>2</day><hour>7</hour><minute>22</minute><second>9</second></startTime>"
+            "<endTime><year>2026</year><month>11</month><day>2</day><hour>7</hour><minute>22</minute><second>39</second></endTime>"
+            "</FileInfo><FileInfo><name>x</name><Id>/y.mp4</Id><recordType>md, sched</recordType>"
+            "<startTime><year>2026</year><month>11</month><day>2</day><hour>8</hour><minute>0</minute><second>0</second></startTime>"
+            "<endTime><year>2026</year><month>11</month><day>2</day><hour>8</hour><minute>5</minute><second>0</second></endTime>"
+            "</FileInfo></FileInfoList>";
+        const QVector<bcrec::Recording> files = bcrec::parseFileList(page);
+        QCOMPARE(files.size(), 2);
+        QCOMPARE(files[0].name, QStringLiteral("0120261102072209"));
+        QVERIFY(files[0].id.endsWith(QLatin1String("RecS02_20261102_072209_072239_1_2.mp4")));
+        QCOMPARE(files[0].start, QDateTime(QDate(2026, 11, 2), QTime(7, 22, 9)));
+        QCOMPARE(files[0].end, QDateTime(QDate(2026, 11, 2), QTime(7, 22, 39)));
+        QCOMPARE(files[0].triggers, int(api::trigger::Person));
+        QCOMPARE(files[1].triggers, int(api::trigger::Motion | api::trigger::Timer));
+        QVERIFY(bcrec::parseFileList("<FileInfoList></FileInfoList>").isEmpty());
     }
 
-    void apiUrlBuilding()
+    void bcAlarmEvents()
     {
-        QCOMPARE(api::apiUrl(QStringLiteral("192.168.1.10"), 443, true,
-                             QStringLiteral("Login")),
-                 QStringLiteral("https://192.168.1.10:443/cgi-bin/api.cgi?cmd=Login"));
-        QCOMPARE(api::apiUrl(QStringLiteral("nvr.local"), 80, false,
-                             QStringLiteral("GetDevInfo"), QStringLiteral("abc123")),
-                 QStringLiteral(
-                     "http://nvr.local:80/cgi-bin/api.cgi?cmd=GetDevInfo&token=abc123"));
+        // A cmd 33 push: channel 0 sees motion and a person, channel 1 nothing.
+        const QByteArray xml =
+            "<body><AlarmEventList version=\"1.1\"><AlarmEvent version=\"1.1\"><channelId>0</channelId>"
+            "<status>MD</status><AItype>people, dog_cat</AItype><recording>0</recording></AlarmEvent>"
+            "<AlarmEvent version=\"1.1\"><channelId>1</channelId><status>none</status>"
+            "<AItype>none</AItype></AlarmEvent></AlarmEventList></body>";
+        const auto ev = bcdev::parseAlarmEvents(xml);
+        QCOMPARE(ev.size(), 2);
+        QCOMPARE(ev[0].first, 0);
+        QVERIFY(ev[0].second.motion && ev[0].second.person && ev[0].second.pet && !ev[0].second.vehicle);
+        QCOMPARE(ev[1].first, 1);
+        QVERIFY(!ev[1].second.motion && !ev[1].second.person);
     }
 
-    void apiUrlEncodesToken()
+    void bcDeviceSupport()
     {
-        const QString url = api::apiUrl(QStringLiteral("h"), 443, true, QStringLiteral("X"),
-                                        QStringLiteral("a+b&c"));
-        QVERIFY(!url.contains(QStringLiteral("a+b&c")));
-        QVERIFY(url.contains(QStringLiteral("token=a%2Bb%26c")));
+        // cmd 199 <item> values of an RLC-823A (pan/tilt) and an RLC-811A
+        // (zoom/focus only), as the cameras sent them.
+        const QByteArray ptz =
+            "<body><Support version=\"1.1\"><channelNum>1</channelNum><audioNum>1</audioNum>"
+            "<audioTalk>1</audioTalk><smartHome><item><name>googleHome</name></item></smartHome>"
+            "<item><chnID>0</chnID><ptzType>2</ptzType><noAudio>0</noAudio><autoFocus>1</autoFocus>"
+            "<battery>0</battery><audioVersion>31</audioVersion><ledCtrl>38</ledCtrl>"
+            "<ptzControl>229</ptzControl><ptzPreset>3</ptzPreset><ptzPatrol>1</ptzPatrol>"
+            "<aitype>30647</aitype></item></Support></body>";
+        const api::ChannelCaps p = bcdev::parseSupport(ptz, 1, false).value(0);
+        QVERIFY(p.ptz && p.panTilt && p.ptzPreset && p.ptzPatrol && p.ptzGuard && p.ptzSpeed);
+        QVERIFY(p.zoom && p.focus && p.zoomFocusPos && p.autoFocus && p.autoTrack);
+        QVERIFY(p.ai && p.aiPeople && p.aiVehicle && p.aiDogCat);
+        QVERIFY(p.audio && p.talk && p.siren && p.floodlight && !p.battery);
+
+        const QByteArray cam =
+            "<body><Support version=\"1.1\"><channelNum>1</channelNum><audioNum>1</audioNum>"
+            "<audioTalk>1</audioTalk><item><chnID>0</chnID><ptzType>1</ptzType><noAudio>0</noAudio>"
+            "<autoFocus>1</autoFocus><audioVersion>31</audioVersion><ledCtrl>38</ledCtrl>"
+            "<ptzControl>1</ptzControl><ptzPreset>0</ptzPreset><aitype>1847</aitype></item></Support></body>";
+        const api::ChannelCaps c = bcdev::parseSupport(cam, 1, false).value(0);
+        QVERIFY(c.ptz && !c.panTilt && !c.ptzPreset && !c.ptzGuard && c.zoom && c.zoomFocusPos);
+        QVERIFY(!c.autoTrack && c.aiPeople && c.floodlight);
+
+        bcdev::Device d;
+        bcdev::parseLoginInfo("<body><DeviceInfo><type>nvr</type><channelNum>8</channelNum></DeviceInfo></body>", d);
+        QVERIFY(d.isNvr);
+        QCOMPARE(d.channelNum, 8);
+        QVERIFY(bcdev::parseIsAdmin("<AbilityInfo><system><subModule><abilityValue>general_rw, "
+                                    "reboot_rw</abilityValue></subModule></system></AbilityInfo>"));
+        QVERIFY(!bcdev::parseIsAdmin("<AbilityInfo><system><subModule><abilityValue>general_ro"
+                                     "</abilityValue></subModule></system></AbilityInfo>"));
     }
 
-    void parseLoginSuccess()
-    {
-        const QByteArray body = R"([{"cmd":"Login","code":0,)"
-                                R"("value":{"Token":{"leaseTime":3600,"name":"deadbeef"}}}])";
-        const api::LoginResult r = api::parseLogin(body);
-        QVERIFY(r.ok);
-        QCOMPARE(r.token, QStringLiteral("deadbeef"));
-        QCOMPARE(r.leaseTimeSec, 3600);
-    }
 
-    void parseLoginRejected()
-    {
-        const QByteArray body = R"([{"cmd":"Login","code":1,)"
-                                R"("error":{"rspCode":-7,"detail":"login failed"}}])";
-        const api::LoginResult r = api::parseLogin(body);
-        QVERIFY(!r.ok);
-        QCOMPARE(r.error, QStringLiteral("login failed"));
-    }
 
-    void parseLoginWrongPassword()
-    {
-        // Exact response from real Reolink firmware (rspCode -502 + lockout counter).
-        const QByteArray body =
-            R"([{"cmd":"Login","code":1,"error":{"auth_warning_info":{"remain_times":10,)"
-            R"("unlock_time":0},"detail":"password wrong","rspCode":-502}}])";
-        const api::LoginResult r = api::parseLogin(body);
-        QVERIFY(!r.ok);
-        QVERIFY(r.wrongPassword);
-        QCOMPARE(r.remainingAttempts, 10);
-        QCOMPARE(r.error, QStringLiteral("password wrong"));
-    }
 
-    void parseBatchMixed()
-    {
-        const QByteArray body =
-            R"([{"cmd":"GetDevInfo","code":0,"value":{"DevInfo":{"name":"Cam"}}},)"
-            R"({"cmd":"GetAbility","code":1,"error":{"rspCode":-6,"detail":"please login first"}}])";
-        const api::BatchResult r = api::parseBatch(body);
-        QVERIFY(r.transportOk);
-        QCOMPARE(r.results.size(), 2);
-        QVERIFY(r.results[0].ok);
-        QCOMPARE(QString::fromStdString(
-                     r.results[0].value["DevInfo"].value("name", std::string{})),
-                 QStringLiteral("Cam"));
-        QVERIFY(!r.results[1].ok);
-        QCOMPARE(r.results[1].rspCode, int(api::RspLoginRequired));
-        QVERIFY(r.needsRelogin());
-    }
 
-    void parseBatchMalformed()
-    {
-        QVERIFY(!api::parseBatch("not json at all").transportOk);
-        QVERIFY(!api::parseBatch(R"({"cmd":"x"})").transportOk); // object, not array
-        QVERIFY(!api::parseBatch("").transportOk);
-    }
 
-    void rtspUrlFormat()
-    {
-        // Channel is 0-based in the API, 1-based zero-padded in the RTSP path
-        // (docs/research/fact-check.md).
-        QCOMPARE(api::rtspUrl(QStringLiteral("10.0.0.5"), QStringLiteral("admin"),
-                              QStringLiteral("secret"), 0, true),
-                 QStringLiteral("rtsp://admin:secret@10.0.0.5:554/h264Preview_01_main"));
-        QCOMPARE(api::rtspUrl(QStringLiteral("10.0.0.5"), QStringLiteral("admin"),
-                              QStringLiteral("secret"), 15, false),
-                 QStringLiteral("rtsp://admin:secret@10.0.0.5:554/h264Preview_16_sub"));
-    }
 
-    void rtspUrlEscapesCredentials()
-    {
-        const QString url = api::rtspUrl(QStringLiteral("h"), QStringLiteral("user@x"),
-                                         QStringLiteral("p:a/s"), 0, true);
-        QCOMPARE(url, QStringLiteral("rtsp://user%40x:p%3Aa%2Fs@h:554/h264Preview_01_main"));
-    }
 
-    void ipv6HostsAreBracketed()
-    {
-        QVERIFY(api::apiUrl(QStringLiteral("fd00::12"), 443, true, QStringLiteral("Login"))
-                    .startsWith(QStringLiteral("https://[fd00::12]:443/")));
-        QVERIFY(api::rtspUrl(QStringLiteral("fd00::12"), QStringLiteral("a"), QStringLiteral("b"),
-                             0, true)
-                    .contains(QStringLiteral("@[fd00::12]:554/")));
-    }
 
-    void ptzCtrlBuild()
-    {
-        const Json move = api::ptzCtrl(2, QStringLiteral("Left"), 40);
-        QCOMPARE(move.value("cmd", std::string{}), std::string("PtzCtrl"));
-        QCOMPARE(move["param"].value("channel", -1), 2);
-        QCOMPARE(move["param"].value("op", std::string{}), std::string("Left"));
-        QCOMPARE(move["param"].value("speed", -1), 40);
-        QVERIFY(!move["param"].contains("id"));
 
-        // Stop carries no speed.
-        const Json stop = api::ptzCtrl(0, QStringLiteral("Stop"));
-        QVERIFY(!stop["param"].contains("speed"));
 
-        // Speed is clamped to the device range.
-        QCOMPARE(api::ptzCtrl(0, QStringLiteral("Up"), 999)["param"].value("speed", -1), 64);
 
-        // ToPos includes the preset id.
-        const Json preset = api::ptzCtrl(1, QStringLiteral("ToPos"), 32, 3);
-        QCOMPARE(preset["param"].value("id", -1), 3);
-    }
 
-    void snapUrlBuild()
-    {
-        const QString url = api::snapUrl(QStringLiteral("10.0.0.5"), 443, true, 1,
-                                         QStringLiteral("tok"));
-        QCOMPARE(url, QStringLiteral("https://10.0.0.5:443/cgi-bin/api.cgi?cmd=Snap&channel=1"
-                                     "&rs=reolink&token=tok"));
-    }
-
-    void parseAbilityCaps()
-    {
-        // talk is per-channel (verified on RLN8-410 firmware).
-        const QByteArray body = R"({"Ability":{"p2p":{"ver":1,"permit":6},
-            "abilityChn":[
-              {"ptzCtrl":{"ver":4,"permit":6},"ptzPreset":{"ver":1,"permit":6},
-               "talk":{"ver":1,"permit":0},
-               "supportAiPeople":{"ver":1,"permit":6},"floodLight":{"ver":0,"permit":0}},
-              {"ptzCtrl":{"ver":0,"permit":0},"talk":{"ver":0,"permit":0},
-               "battery":{"ver":1,"permit":6}}
-            ]}})";
-        const Json value = Json::parse(body.constData(), body.constData() + body.size(),
-                                       nullptr, false);
-        const api::Capabilities caps = api::parseAbility(value);
-        QVERIFY(caps.valid);
-        QVERIFY(caps.talk); // any channel has talk
-        QCOMPARE(caps.channels.size(), 2);
-        QVERIFY(caps.channels[0].ptz);
-        QVERIFY(caps.channels[0].ptzPreset);
-        QVERIFY(caps.channels[0].talk);
-        QVERIFY(caps.channels[0].aiPeople);
-        QVERIFY(caps.channels[0].ai);
-        QVERIFY(!caps.channels[0].floodlight);
-        QVERIFY(!caps.channels[1].ptz);
-        QVERIFY(!caps.channels[1].talk);
-        QVERIFY(caps.channels[1].battery);
-    }
-
-    void parseAbilityAdmin()
-    {
-        const QByteArray adminBody = R"({"Ability":{"userManage":{"ver":1,"permit":6},
-            "abilityChn":[{}]}})";
-        Json v = Json::parse(adminBody.constData(), adminBody.constData() + adminBody.size(),
-                             nullptr, false);
-        QVERIFY(api::parseAbility(v).isAdmin);
-
-        const QByteArray userBody = R"({"Ability":{"userManage":{"ver":1,"permit":0},
-            "abilityChn":[{}]}})";
-        v = Json::parse(userBody.constData(), userBody.constData() + userBody.size(), nullptr,
-                        false);
-        QVERIFY(!api::parseAbility(v).isAdmin);
-    }
-
-    void parseAbilityEmptyIsInvalid()
-    {
-        QVERIFY(!api::parseAbility(Json::object()).valid);
-        QVERIFY(!api::parseAbility(Json::array()).valid);
-    }
 
     void jsonVariantRoundTrip()
     {
@@ -234,146 +141,103 @@ private slots:
         QVERIFY(back["Enc"]["flags"].is_array());
     }
 
-    void parseChannelStatusNvr()
+    void toJsonSendsIntegralDoublesAsIntegers()
     {
-        // Real RLN8-410 shape: value.status[] with per-channel online/name/uid.
-        const QByteArray body = R"({"count":4,"status":[
-            {"channel":0,"name":"Front","online":1,"sleep":0,"uid":"AAA"},
-            {"channel":1,"name":"Side","online":1,"sleep":0,"uid":"BBB"},
-            {"channel":2,"name":"","online":0,"sleep":0,"uid":""},
-            {"channel":3,"name":"Rear","online":1,"sleep":0,"uid":"CCC"}]})";
-        const Json v = Json::parse(body.constData(), body.constData() + body.size(), nullptr, false);
-        const QVector<api::ChannelInfo> chans = api::parseChannelStatus(v);
-        QCOMPARE(chans.size(), 4);
-        int online = 0;
-        for (const auto &c : chans)
-            if (c.online)
-                ++online;
-        QCOMPARE(online, 3);
-        QCOMPARE(chans[0].name, QStringLiteral("Front"));
-        QCOMPARE(chans[3].channel, 3);
-        QVERIFY(!chans[2].online);
+        // QML passes Math.round() results as double; firmware wants 207, not 207.0.
+        const Json j = api::toJson(QVariantMap{{QStringLiteral("pos"), 207.0},
+                                               {QStringLiteral("ratio"), 0.5}});
+        QVERIFY(j["pos"].is_number_integer());
+        QCOMPARE(j["pos"].get<int>(), 207);
+        QVERIFY(j["ratio"].is_number_float());
+        QCOMPARE(j.dump(), std::string(R"({"pos":207,"ratio":0.5})"));
     }
 
-    void detectionStates()
-    {
-        auto parse = [](const char *s) {
-            const QByteArray b(s);
-            return Json::parse(b.constData(), b.constData() + b.size(), nullptr, false);
-        };
-        QVERIFY(api::parseMdState(parse(R"({"state":1})")));
-        QVERIFY(!api::parseMdState(parse(R"({"state":0})")));
-        QVERIFY(!api::parseMdState(parse(R"({})")));
 
-        const api::DetectionState d = api::parseAiState(parse(
-            R"({"people":{"alarm_state":1,"support":1},"vehicle":{"alarm_state":0,"support":1},)"
-            R"("dog_cat":{"alarm_state":1,"support":1}})"));
-        QVERIFY(d.person);
-        QVERIFY(!d.vehicle);
-        QVERIFY(d.pet);
+
+
+
+
+
+    void imaAdpcmRoundTrip()
+    {
+        // 440 Hz at 16 kHz, half scale: encode then decode with the start state.
+        QVector<qint16> pcm(1024);
+        for (int i = 0; i < pcm.size(); ++i)
+            pcm[i] = static_cast<qint16>(16000 * std::sin(2 * M_PI * 440 * i / 16000.0));
+        ImaAdpcm enc;
+        const QByteArray data = enc.encode(pcm.constData(), static_cast<int>(pcm.size()));
+        QCOMPARE(data.size(), 512);
+        const QVector<qint16> back = ImaAdpcm::decode(data, 0, 0);
+        QCOMPARE(back.size(), pcm.size());
+        double sig = 0, err = 0;
+        for (int i = 64; i < pcm.size(); ++i) { // skip the adaptation ramp
+            sig += double(pcm[i]) * pcm[i];
+            err += double(pcm[i] - back[i]) * (pcm[i] - back[i]);
+        }
+        QVERIFY2(10 * std::log10(sig / err) > 20, "ADPCM round trip below 20 dB SNR");
     }
 
-    void batteryInfo()
+    void imaAdpcmDviNibbleOrder()
     {
-        auto parse = [](const char *s) {
-            const QByteArray b(s);
-            return Json::parse(b.constData(), b.constData() + b.size(), nullptr, false);
-        };
-        const api::BatteryInfo b = api::parseBatteryInfo(
-            parse(R"({"Battery":{"batteryPercent":73,"chargeStatus":1}})"));
-        QVERIFY(b.present);
-        QCOMPARE(b.percent, 73);
-        QVERIFY(b.charging);
-
-        // Mains device: no battery fields -> not present.
-        QVERIFY(!api::parseBatteryInfo(parse(R"({"Enc":{}})")).present);
-        // NVR garbage (verified on RLN8-410): code 0 but nonsense values -> not present.
-        QVERIFY(!api::parseBatteryInfo(
-                     parse(R"({"Battery":{"batteryPercent":2124718168,"chargeStatus":1990912008}})"))
-                     .present);
-        QVERIFY(!api::parseBatteryInfo(parse(R"({"batteryPercent":150})")).present);
+        // First sample positive and large -> code 7 (0111) in the HIGH nibble;
+        // second sample back to 0 -> a negative code (bit 3 set) in the low one.
+        ImaAdpcm enc;
+        const qint16 two[2] = {32000, 0};
+        const QByteArray b = enc.encode(two, 2);
+        QCOMPARE(b.size(), 1);
+        QCOMPARE(quint8(b[0]) >> 4, 7);
+        QVERIFY((quint8(b[0]) & 0x08) != 0);
     }
 
-    void searchRoundTrip()
+    void talkFrameLayout()
     {
-        const QDateTime start(QDate(2026, 7, 9), QTime(0, 0));
-        const QDateTime end(QDate(2026, 7, 9), QTime(23, 59, 59));
-        const Json body = api::searchBody(0, start, end, QStringLiteral("main"));
-        const Json s = body["param"]["Search"];
-        QCOMPARE(s.value("streamType", std::string{}), std::string("main"));
-        QCOMPARE(s["StartTime"].value("year", 0), 2026);
-        QCOMPARE(s["EndTime"].value("hour", 0), 23);
-
-        // Real RLN8-410 firmware: File entries have NO "name", size is a STRING,
-        // "type" is the stream ("sub"), and Status.table is the calendar bitmap.
-        const QByteArray resp = R"({"SearchResult":{"channel":0,
-            "Status":[{"mon":7,"year":2026,"table":"0000011110000000000000000000000"}],
-            "File":[
-            {"size":"10485760","type":"sub","frameRate":0,"width":0,"height":0,
-             "StartTime":{"year":2026,"mon":7,"day":9,"hour":8,"min":30,"sec":0},
-             "PlaybackTime":{"year":2026,"mon":7,"day":9,"hour":4,"min":59,"sec":58},
-             "EndTime":{"year":2026,"mon":7,"day":9,"hour":8,"min":31,"sec":0}}]}})";
-        const Json value = Json::parse(resp.constData(), resp.constData() + resp.size(),
-                                       nullptr, false);
-        const api::SearchResult sr = api::parseSearch(value);
-        QVERIFY(sr.ok);
-        QCOMPARE(sr.files.size(), 1);
-        QVERIFY(sr.files[0].name.isEmpty()); // NVR firmware has no file handle
-        QCOMPARE(sr.files[0].start, QDateTime(QDate(2026, 7, 9), QTime(8, 30)));
-        // PlaybackTime is captured separately — it is the HTTP-FLV playback seek
-        // reference (leads wall-clock StartTime by the NVR's UTC offset). The FLV
-        // endpoint rejects a wall-clock start, so this field must survive parsing.
-        QCOMPARE(sr.files[0].playbackTime, QDateTime(QDate(2026, 7, 9), QTime(4, 59, 58)));
-        QCOMPARE(sr.files[0].size, qint64(10485760)); // string coerced to int
-        QCOMPARE(sr.files[0].streamType, QStringLiteral("sub"));
-        // Status bitmap -> days 6,7,8,9 have recordings.
-        QCOMPARE(sr.recordingDays, QVector<int>({6, 7, 8, 9}));
+        const QByteArray adpcm(512, '\x5a');
+        const QByteArray f = BaichuanControl::talkFrame(adpcm, -2, 7);
+        QCOMPARE(f.size(), 16 + 512);
+        QCOMPARE(f.left(4), QByteArray("01wb"));
+        QCOMPARE(quint8(f[4]) | (quint8(f[5]) << 8), 520); // size: data + 8
+        QCOMPARE(quint8(f[6]) | (quint8(f[7]) << 8), 520); // repeated
+        QCOMPARE(quint8(f[8]), 0x00);
+        QCOMPARE(quint8(f[9]), 0x01);
+        QCOMPARE(quint8(f[10]), (512 / 2 + 2) & 0xFF);       // words, truncated
+        QCOMPARE(quint8(f[11]), 0x00);
+        QCOMPARE(qint16(quint8(f[12]) | (quint8(f[13]) << 8)), qint16(-2)); // predictor
+        QCOMPARE(quint8(f[14]) | (quint8(f[15]) << 8), 7);                  // index
+        QCOMPARE(f.mid(16), adpcm);
     }
 
-    void playbackFlvUrlFormat()
+    void talkAbilityAndConfig()
     {
-        const QDateTime start(QDate(2026, 7, 9), QTime(0, 0, 0));
-        const QString url = api::playbackFlvUrl(QStringLiteral("10.0.0.5"), 443, true,
-                                                0, /*mainStream=*/true, start,
-                                                QStringLiteral("admin"), QStringLiteral("pw"));
-        QVERIFY(url.startsWith(
-            QStringLiteral("https://10.0.0.5/flv?port=1935&app=bcs&stream=playback.bcs")));
-        QVERIFY(url.contains(QStringLiteral("channel=0")));
-        QVERIFY(url.contains(QStringLiteral("type=0")));           // main = type 0 (EnumRTMPStreamType[CLEAR])
-        QVERIFY(url.contains(QStringLiteral("start=20260709000000")));
-        QVERIFY(url.contains(QStringLiteral("user=admin")));
+        // Real reply from an RLC-823A / RLC-811A / Duo 2 PoE (cmd 10).
+        const QByteArray ability = R"(<?xml version="1.0" encoding="UTF-8" ?>
+<body>
+<TalkAbility version="1.1">
+<duplexList><duplex>FDX</duplex></duplexList>
+<audioStreamModeList><audioStreamMode>followVideoStream</audioStreamMode></audioStreamModeList>
+<audioConfigList><audioConfig><priority>0</priority><audioType>adpcm</audioType>
+<sampleRate>16000</sampleRate><samplePrecision>16</samplePrecision>
+<lengthPerEncoder>1024</lengthPerEncoder><soundTrack>mono</soundTrack></audioConfig></audioConfigList>
+</TalkAbility>
+</body>)";
+        bool ok = false;
+        const BaichuanControl::TalkParams p = BaichuanControl::parseTalkAbility(ability, &ok);
+        QVERIFY(ok);
+        QCOMPARE(p.duplex, QStringLiteral("FDX"));
+        QCOMPARE(p.audioStreamMode, QStringLiteral("followVideoStream"));
+        QCOMPARE(p.sampleRate, 16000);
+        QCOMPARE(p.lengthPerEncoder, 1024);
+        const QByteArray cfg = BaichuanControl::talkConfigXml(0, p);
+        QVERIFY(cfg.contains("<TalkConfig version=\"1.1\">"));
+        QVERIFY(cfg.contains("<channelId>0</channelId>"));
+        QVERIFY(cfg.contains("<duplex>FDX</duplex>"));
+        QVERIFY(cfg.contains("<audioType>adpcm</audioType>"));
+        QVERIFY(cfg.contains("<lengthPerEncoder>1024</lengthPerEncoder>"));
+        QVERIFY(cfg.contains("<soundTrack>mono</soundTrack>"));
+        bool none = true;
+        BaichuanControl::parseTalkAbility("<body/>", &none);
+        QVERIFY(!none);
     }
 
-    void nvrDownloadRoundTrip()
-    {
-        const QDateTime start(QDate(2026, 7, 9), QTime(1, 59, 58));
-        const QDateTime end(QDate(2026, 7, 9), QTime(2, 0, 10));
-        const Json cmd = api::nvrDownloadBody(0, start, end, QStringLiteral("main"));
-        QCOMPARE(cmd.value("cmd", std::string{}), std::string("NvrDownload"));
-        QCOMPARE(cmd.value("action", 0), 1);
-        const Json nd = cmd["param"]["NvrDownload"];
-        QCOMPARE(nd.value("channel", -1), 0);
-        QCOMPARE(nd.value("streamType", std::string{}), std::string("main"));
-        QCOMPARE(nd["StartTime"].value("hour", 0), 1);
-        QCOMPARE(nd["EndTime"].value("min", 0), 0);
-
-        // Real firmware: fileSize is a STRING; fileName carries the local start.
-        const QByteArray resp = R"({"fileCount":2,"fileList":[
-            {"fileName":"fragment_01_20260709015958.mp4","fileSize":"17914540"},
-            {"fileName":"fragment_01_20260708205958.mp4","fileSize":"4783735"}]})";
-        const Json value = Json::parse(resp.constData(), resp.constData() + resp.size(),
-                                       nullptr, false);
-        const QVector<api::DownloadFile> files = api::parseNvrDownload(value);
-        QCOMPARE(files.size(), 2);
-        QCOMPARE(files[0].fileName, QStringLiteral("fragment_01_20260709015958.mp4"));
-        QCOMPARE(files[0].size, qint64(17914540)); // string coerced to int
-
-        const QString url = api::downloadUrl(QStringLiteral("10.0.0.5"), 443, true,
-                                             files[0].fileName, QStringLiteral("tok/en+1"));
-        QVERIFY(url.startsWith(QStringLiteral("https://10.0.0.5/cgi-bin/api.cgi?cmd=Download")));
-        QVERIFY(url.contains(QStringLiteral("source=fragment_01_20260709015958.mp4")));
-        QVERIFY(url.contains(QStringLiteral("token=tok%2Fen%2B1"))); // percent-encoded
-    }
 
     void baichuanCrypto()
     {

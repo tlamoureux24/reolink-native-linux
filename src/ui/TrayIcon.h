@@ -15,6 +15,7 @@ class TrayIcon : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(bool closeToTray READ closeToTray WRITE setCloseToTray NOTIFY closeToTrayChanged)
+    Q_PROPERTY(bool startOnLogin READ startOnLogin WRITE setStartOnLogin NOTIFY startOnLoginChanged)
 
 public:
     explicit TrayIcon(QObject *parent = nullptr);
@@ -27,9 +28,12 @@ public:
     void setStartOnLogin(bool on);
 
     void setUnread(int unread); // tooltip badge
+    // Quit the app through the same guarded path as the tray menu's Quit.
+    Q_INVOKABLE void quit() { emit quitRequested(); }
 
 signals:
     void closeToTrayChanged();
+    void startOnLoginChanged();
     void openRequested();
     void quitRequested();
 

@@ -1,11 +1,17 @@
 #include "DeviceManager.h"
 
+#include "media/TalkSession.h"
+
 #include "core/Log.h"
 #include "core/Paths.h"
+#include "media/BcClipWriter.h"
 #include "media/StreamPlayer.h"
 #include "protocol/BaichuanClient.h"
 #include "protocol/BaichuanControl.h"
-#include "protocol/ReolinkHttpClient.h"
+#include "protocol/BcDevice.h"
+#include "protocol/BcRecordings.h"
+#include "protocol/BcSettings.h"
+#include "protocol/BcSession.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -23,20 +29,6 @@
 namespace rl {
 
 namespace {
-// Firmware spells the codec several ways ("h265", "H265", "hevc") and newer
-// builds sometimes omit the field entirely. Empty result = unknown, and an
-// unknown codec is PROBED from the stream rather than assumed — assuming h264
-// for an HEVC main stream is exactly issue #4.
-QString normalizeCodec(const QString &vtype)
-{
-    const QString v = vtype.toLower();
-    if (v.contains(QLatin1String("265")) || v.contains(QLatin1String("hevc")))
-        return QStringLiteral("h265");
-    if (v.contains(QLatin1String("264")) || v.contains(QLatin1String("avc")))
-        return QStringLiteral("h264");
-    return {};
-}
-
 // Per-camera manual view-rotation fix (issue #3), keyed by identity rather
 // than row because rows shift when devices come and go.
 QString rotationKey(qint64 hostId, int channel)
@@ -51,15 +43,6 @@ int loadRotation(qint64 hostId, int channel)
 
 
 namespace {
-// Declared display size of a GetEnc stream ("mainStream"/"subStream"), e.g.
-// 7680x2160. Empty if absent/zero. Used to detect transmitted-rotated streams.
-QSize encStreamSize(const Json &enc, const char *stream)
-{
-    const Json s = jsonObj(enc, stream);
-    const int w = jsonInt(s, "width", 0);
-    const int h = jsonInt(s, "height", 0);
-    return (w > 0 && h > 0) ? QSize(w, h) : QSize();
-}
 } // namespace
 
 DeviceManager::DeviceManager(Database *db, CredentialStore *credentials, QObject *parent)
@@ -90,11 +73,17 @@ DeviceManager::DeviceManager(Database *db, CredentialStore *credentials, QObject
     m_pollTimer.setInterval(10000);
     connect(&m_pollTimer, &QTimer::timeout, this, &DeviceManager::pollDetections);
     m_pollTimer.start();
+
+    m_sessionTimer.setInterval(1000);
+    connect(&m_sessionTimer, &QTimer::timeout, this, &DeviceManager::watchSessions);
+    m_sessionTimer.start();
 }
 
 DeviceManager::~DeviceManager()
 {
     m_pending.waitForFinished();
+    for (const qint64 hostId : m_sessions.keys())
+        dropSession(hostId);
 }
 
 static QString detKey(qint64 hostId, int channel)
@@ -102,41 +91,8 @@ static QString detKey(qint64 hostId, int channel)
     return QString::number(hostId) + u':' + QString::number(channel);
 }
 
-void DeviceManager::applyConnectivity(qint64 hostId, bool transportOk,
-                                      const QHash<int, bool> &chanOnline)
+void DeviceManager::applyChannelStates(qint64 hostId, const QHash<int, bool> &chanOnline)
 {
-    // Host-level: three consecutive failed poll cycles (~30s) = unreachable;
-    // one success after that = recovered. Fires exactly once per transition.
-    int &fails = m_hostFails[hostId];
-    QString hostName;
-    for (const Entry &e : m_entries)
-        if (e.rec.id == hostId) { hostName = e.rec.name; break; }
-
-    if (!transportOk) {
-        if (++fails != 3)
-            return;
-        for (int i = 0; i < m_entries.size(); ++i) {
-            if (m_entries.at(i).rec.id != hostId || !m_entries.at(i).online)
-                continue;
-            m_entries[i].online = false;
-            m_entries[i].status = tr("unreachable");
-            emit dataChanged(index(i), index(i));
-        }
-        emit connectivityChanged(hostId, -1, hostName, false);
-        return;
-    }
-    if (fails >= 3) {
-        for (int i = 0; i < m_entries.size(); ++i) {
-            if (m_entries.at(i).rec.id != hostId || m_entries.at(i).online)
-                continue;
-            m_entries[i].online = true;
-            m_entries[i].status = tr("online");
-            emit dataChanged(index(i), index(i));
-        }
-        emit connectivityChanged(hostId, -1, hostName, true);
-    }
-    fails = 0;
-
     // Channel-level (NVRs): flip individual cameras that dropped or returned.
     for (auto it = chanOnline.constBegin(); it != chanOnline.constEnd(); ++it) {
         for (int i = 0; i < m_entries.size(); ++i) {
@@ -145,12 +101,55 @@ void DeviceManager::applyConnectivity(qint64 hostId, bool transportOk,
                 continue;
             if (e.online != it.value()) {
                 e.online = it.value();
-                e.status = it.value() ? tr("online") : tr("offline");
+                e.status = !it.value() ? tr("offline") : e.remote ? tr("online · remote") : tr("online");
                 emit dataChanged(index(i), index(i));
                 emit connectivityChanged(hostId, e.channel, e.chanName, it.value());
             }
             break;
         }
+    }
+}
+
+void DeviceManager::dropSession(qint64 hostId)
+{
+    const HostSession hs = m_sessions.take(hostId);
+    if (hs.session && hs.alarmId)
+        hs.session->unroute(hs.alarmId);
+    if (hs.session && hs.pushToken)
+        hs.session->removePushHandler(hs.pushToken);
+}
+
+void DeviceManager::watchSessions()
+{
+    // A session ends when the device stops answering (20 s of silence despite
+    // heartbeats, as the official SDK) or closes the connection: the host goes
+    // offline at once and is revalidated with the usual backoff.
+    const QList<qint64> hosts = m_sessions.keys();
+    for (const qint64 hostId : hosts) {
+        const HostSession hs = m_sessions.value(hostId);
+        if (hs.session->isAlive())
+            continue;
+        qCInfo(lcCore) << "host" << hostId << "lost:" << hs.session->error();
+        dropSession(hostId);
+        QString hostName;
+        for (int i = 0; i < m_entries.size(); ++i) {
+            Entry &e = m_entries[i];
+            if (e.rec.id != hostId)
+                continue;
+            hostName = e.rec.name;
+            if (!e.online)
+                continue;
+            e.online = false;
+            e.status = tr("unreachable");
+            e.problem = Problem::Unreachable;
+            emit dataChanged(index(i), index(i));
+        }
+        if (!m_lostHosts.contains(hostId)) {
+            m_lostHosts.insert(hostId);
+            emit connectivityChanged(hostId, -1, hostName, false);
+        }
+        m_retryDelaySecs[hostId] = 15;
+        validateAsync(hostId);
     }
 }
 
@@ -161,8 +160,8 @@ void DeviceManager::pollDetections()
 
     // Recovery probes ride the poll tick: hosts that failed with a TRANSPORT
     // problem revalidate when their backoff expires, so an NVR that was off at
-    // app launch appears by itself once it's back — previously a host with no
-    // client was skipped by everything and stayed "connecting…" until restart.
+    // app launch appears by itself once it's back. (Detections are not polled:
+    // each device pushes them on its session, see applyValidation.)
     const QDateTime now = QDateTime::currentDateTimeUtc();
     for (auto it = m_nextRetryAt.begin(); it != m_nextRetryAt.end();) {
         if (it.value() <= now) {
@@ -173,124 +172,28 @@ void DeviceManager::pollDetections()
             ++it;
         }
     }
+}
 
-    // Poll each HOST with a SINGLE batched request covering all its online
-    // channels — Reolink NVRs are connection-limited, so opening one connection
-    // per channel (5+ at once) starves live/playback streams. One connection per
-    // host per cycle keeps capacity free.
-    struct HostPoll {
-        std::shared_ptr<ReolinkHttpClient> client;
-        QVector<int> channels;
-        QVector<bool> wantAi;
-        QVector<QString> names;
+void DeviceManager::applyDetection(qint64 hostId, int channel, const api::DetectionState &st)
+{
+    const int row = rowOfHostChannel(hostId, channel);
+    if (row < 0 || m_entries.at(row).channel != channel)
+        return;
+    const QString camera = m_entries.at(row).chanName;
+    const QString ckey = detKey(hostId, channel);
+    const api::DetectionState prev = m_lastDetection.value(ckey);
+    auto edge = [&](bool isOn, bool was, const char *type) {
+        if (isOn && !was)
+            emit detectionEvent(hostId, channel, QString::fromUtf8(type), camera);
     };
-    QHash<qint64, HostPoll> byHost;
-    QVector<qint64> order;
-    for (const Entry &e : m_entries) {
-        // Offline entries stay in the poll: that's how we notice recovery.
-        if (e.rec.kind == QLatin1String("stream") || !e.client)
-            continue;
-        if (!byHost.contains(e.rec.id)) {
-            byHost[e.rec.id] = HostPoll{e.client, {}, {}, {}};
-            order.append(e.rec.id);
-        }
-        HostPoll &hp = byHost[e.rec.id];
-        hp.channels.append(e.channel);
-        hp.wantAi.append(e.caps.ai);
-        hp.names.append(e.chanName);
-    }
-
-    for (qint64 hostId : order) {
-        const QString key = QString::number(hostId);
-        if (m_pollInFlight.value(key, false))
-            continue;
-        m_pollInFlight[key] = true;
-        const HostPoll hp = byHost.value(hostId);
-
-        m_pending.addFuture(QtConcurrent::run([this, hostId, key, hp] {
-            // Build one ordered batch; remember what each entry maps to.
-            struct Item { int channel; bool isAi; };
-            QVector<Item> items;
-            Json cmds = Json::array();
-            for (int i = 0; i < hp.channels.size(); ++i) {
-                const int ch = hp.channels[i];
-                items.append({ch, false});
-                cmds.push_back(api::command(QStringLiteral("GetMdState"), Json{{"channel", ch}}));
-                if (hp.wantAi[i]) {
-                    items.append({ch, true});
-                    cmds.push_back(
-                        api::command(QStringLiteral("GetAiState"), Json{{"channel", ch}}));
-                }
-            }
-            // One channel-status query per NVR cycle: notices cameras that
-            // drop or return while the app is running.
-            const bool wantStatus = hp.channels.size() > 1;
-            if (wantStatus)
-                cmds.push_back(api::command(QStringLiteral("GetChannelstatus"), Json::object()));
-            const api::BatchResult batch = hp.client->call(cmds);
-
-            QHash<int, bool> chanOnline; // parsed channel -> online (NVRs only)
-            if (batch.transportOk && wantStatus && batch.results.size() == items.size() + 1) {
-                const api::CommandResult &cs = batch.results.last();
-                if (cs.ok && cs.value.contains("status") && cs.value["status"].is_array())
-                    for (const auto &c : cs.value["status"]) {
-                        if (c.contains("channel"))
-                            chanOnline[c["channel"].get<int>()] =
-                                c.value("online", 1) != 0;
-                    }
-            }
-
-            // Combine per-channel md/ai (results preserve request order).
-            QHash<int, api::DetectionState> states;
-            if (batch.transportOk) {
-                for (int i = 0; i < batch.results.size() && i < items.size(); ++i) {
-                    const api::CommandResult &r = batch.results[i];
-                    if (!r.ok)
-                        continue;
-                    api::DetectionState &st = states[items[i].channel];
-                    if (items[i].isAi) {
-                        const api::DetectionState ai = api::parseAiState(r.value);
-                        st.person = ai.person;
-                        st.vehicle = ai.vehicle;
-                        st.pet = ai.pet;
-                    } else {
-                        st.motion = api::parseMdState(r.value);
-                    }
-                }
-            }
-
-            const bool transportOk = batch.transportOk;
-            QMetaObject::invokeMethod(
-                this,
-                [this, hostId, key, hp, states, transportOk, chanOnline] {
-                    m_pollInFlight[key] = false;
-                    applyConnectivity(hostId, transportOk, chanOnline);
-                    if (!transportOk)
-                        return;
-                    for (int i = 0; i < hp.channels.size(); ++i) {
-                        const int channel = hp.channels[i];
-                        const QString ckey = detKey(hostId, channel);
-                        const api::DetectionState st = states.value(channel);
-                        const api::DetectionState prev = m_lastDetection.value(ckey);
-                        const QString camera = hp.names[i];
-                        auto edge = [&](bool now, bool was, const char *type) {
-                            if (now && !was)
-                                emit detectionEvent(hostId, channel, QString::fromUtf8(type),
-                                                    camera);
-                        };
-                        edge(st.person, prev.person, "person");
-                        edge(st.vehicle, prev.vehicle, "vehicle");
-                        edge(st.pet, prev.pet, "pet");
-                        const bool aiActive = st.person || st.vehicle || st.pet;
-                        const bool prevAi = prev.person || prev.vehicle || prev.pet;
-                        if (!aiActive)
-                            edge(st.motion, prev.motion || prevAi, "motion");
-                        m_lastDetection[ckey] = st;
-                    }
-                },
-                Qt::QueuedConnection);
-        }));
-    }
+    edge(st.person, prev.person, "person");
+    edge(st.vehicle, prev.vehicle, "vehicle");
+    edge(st.pet, prev.pet, "pet");
+    const bool aiActive = st.person || st.vehicle || st.pet;
+    const bool prevAi = prev.person || prev.vehicle || prev.pet;
+    if (!aiActive)
+        edge(st.motion, prev.motion || prevAi, "motion");
+    m_lastDetection[ckey] = st;
 }
 
 int DeviceManager::rowCount(const QModelIndex &parent) const
@@ -385,40 +288,37 @@ QHash<int, QByteArray> DeviceManager::roleNames() const
 }
 
 void DeviceManager::testDevice(const QString &addr, const QString &username,
-                               const QString &password, bool https, int port)
+                               const QString &password)
 {
-    const int portv = port > 0 ? port : (https ? 443 : 80);
-    m_pending.addFuture(QtConcurrent::run([this, addr, username, password, https, portv] {
-        ReolinkHttpClient client(addr, portv, https, username, password);
-        const api::BatchResult b =
-            client.call(Json::array({api::command(QStringLiteral("GetDevInfo"))}));
-
-        bool ok = false;
-        QString name, model, message;
-        if (b.transportOk && !b.results.isEmpty() && b.results.first().ok) {
-            const Json info = jsonObj(b.results.first().value, "DevInfo");
-            name = QString::fromStdString(jsonStr(info, "name"));
-            model = QString::fromStdString(jsonStr(info, "model"));
-            ok = true;
-        } else if (!b.error.isEmpty()) {
-            message = b.error;
-        } else if (b.transportOk && !b.results.isEmpty()) {
-            message = b.results.first().detail;
+    m_pending.addFuture(QtConcurrent::run([this, addr, username, password] {
+        // Log in over Baichuan, as the device will be used, and read its name.
+        BcSession::Params sp;
+        sp.target = {addr, 9000, QString(), false};
+        sp.username = username;
+        sp.password = password;
+        const std::shared_ptr<BcSession> session = BcSession::acquire(sp);
+        bool ok = session->waitReady(15000);
+        QString name, model, message, problem;
+        if (ok) {
+            bcdev::Device d;
+            QByteArray xml;
+            quint16 status = 0;
+            ok = session->requestXml(80, 250, {}, {}, &xml, &status) && status == 200;
+            if (ok) {
+                bcdev::parseVersionInfo(xml, d);
+                name = d.name;
+                model = d.model;
+            } else {
+                message = tr("the device did not answer like a Reolink camera or NVR");
+                problem = QStringLiteral("protocol");
+            }
+        } else if (session->failure() == BcSession::Failure::Rejected) {
+            message = tr("login rejected — check the user name and password");
+            problem = QStringLiteral("auth");
+        } else {
+            message = tr("no answer on port 9000 — is it a Reolink camera or NVR?");
+            problem = QStringLiteral("transport");
         }
-        if (!ok && message.isEmpty())
-            message = tr("the device did not answer like a Reolink camera or NVR");
-
-        QString problem;
-        switch (client.lastFailKind()) {
-        case ReolinkHttpClient::FailKind::Transport: problem = QStringLiteral("transport"); break;
-        case ReolinkHttpClient::FailKind::Auth: problem = QStringLiteral("auth"); break;
-        case ReolinkHttpClient::FailKind::Locked: problem = QStringLiteral("locked"); break;
-        case ReolinkHttpClient::FailKind::Protocol: problem = QStringLiteral("protocol"); break;
-        case ReolinkHttpClient::FailKind::None: break;
-        }
-        if (!ok && problem.isEmpty())
-            problem = QStringLiteral("protocol");
-
         QMetaObject::invokeMethod(
             this,
             [this, ok, message, name, model, problem] {
@@ -475,14 +375,14 @@ void DeviceManager::updateCredentials(int row, const QString &username, const QS
 }
 
 void DeviceManager::addDevice(const QString &addr, const QString &username,
-                              const QString &password, bool https, int port)
+                              const QString &password)
 {
+    // Reached over Baichuan (TCP 9000, or by UID): the port/https columns of
+    // the hosts table are left at their defaults, unused.
     HostRecord rec;
-    rec.kind = QStringLiteral("camera"); // refined to "nvr" after GetDevInfo
+    rec.kind = QStringLiteral("camera"); // refined to "nvr" after validation
     rec.name = addr;
     rec.addr = addr;
-    rec.https = https;
-    rec.port = port > 0 ? port : (https ? 443 : 80);
     rec.username = username;
     rec.id = m_db->addHost(rec);
     if (rec.id < 0) {
@@ -556,6 +456,8 @@ void DeviceManager::removeDevice(int row)
             endRemoveRows();
         }
     }
+    dropSession(id);
+    m_lostHosts.remove(id);
     m_db->removeHost(id);
     m_credentials->remove(id);
     emit countChanged();
@@ -616,9 +518,61 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
     m_nextRetryAt.remove(hostId);
     m_retryDelaySecs.remove(hostId);
 
-    // Update the host record (name/model/kind), persist once.
+    // The host's session from now on. The device pushes on it its detections
+    // once subscribed (cmd 31 on channel byte 251, then cmd 33), as the
+    // official client does, and an NVR its channels' states (cmd 145).
+    dropSession(hostId);
+    HostSession hs;
+    hs.session = v.session;
+    if (v.session) {
+        const std::weak_ptr<BcSession> weak = v.session;
+        auto onPush = [this, hostId, weak](const BcMessage &m) {
+            if (m.cmd != 33 && m.cmd != 145)
+                return;
+            const auto s = weak.lock();
+            if (!s || m.body.isEmpty())
+                return;
+            const QByteArray xml = s->bodyXml(m);
+            if (m.cmd == 145) {
+                QHash<int, bool> states;
+                for (const auto &st : bcdev::parseChannelStates(xml))
+                    states.insert(st.first, st.second);
+                QMetaObject::invokeMethod(
+                    this, [this, hostId, states] { applyChannelStates(hostId, states); },
+                    Qt::QueuedConnection);
+                return;
+            }
+            const auto events = bcdev::parseAlarmEvents(xml);
+            if (events.isEmpty())
+                return;
+            for (const auto &ev : events)
+                qCDebug(lcCore) << "host" << hostId << "channel" << ev.first << "alarm: motion"
+                                << ev.second.motion << "person" << ev.second.person << "vehicle"
+                                << ev.second.vehicle << "pet" << ev.second.pet;
+            QMetaObject::invokeMethod(
+                this,
+                [this, hostId, events] {
+                    for (const auto &ev : events)
+                        applyDetection(hostId, ev.first, ev.second);
+                },
+                Qt::QueuedConnection);
+        };
+        hs.pushToken = v.session->addPushHandler(onPush);
+        hs.alarmId = v.session->newMessId();
+        v.session->route(hs.alarmId, onPush);
+        v.session->send(31, 251, hs.alarmId, {}, {});
+        qCInfo(lcCore) << "host" << hostId << "alarm events subscribed on"
+                       << v.session->linkDescription();
+    }
+    if (hs.session)
+        m_sessions.insert(hostId, hs);
+    const bool recovered = m_lostHosts.remove(hostId);
+
+    // Update the host record (name/model/kind/UID), persist once.
     if (!v.hostName.isEmpty())
         rec.name = v.hostName;
+    if (!v.hostUid.isEmpty())
+        rec.uid = v.hostUid; // reaches the device by UID when away from it
     rec.model = v.model;
     if (v.channelNum > 1)
         rec.kind = QStringLiteral("nvr");
@@ -633,11 +587,13 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         e.channel = ch.channel;
         e.chanName = ch.name.isEmpty() ? rec.name : ch.name;
         e.online = ch.online;
-        e.status = ch.online ? tr("online") : tr("offline");
+        e.status = !ch.online ? tr("offline") : v.status;
         e.mainCodec = ch.codec; // may be empty = unknown -> probe
         e.mainSize = ch.mainSize;
         e.subSize = ch.subSize;
         e.uid = ch.uid;
+        e.hostUid = v.hostUid;
+        e.remote = !v.linkMode.isEmpty() && v.linkMode != QLatin1String("tcp");
         e.caps = ch.caps;
         e.talk = ch.caps.talk;
         e.isAdmin = v.isAdmin;
@@ -645,10 +601,29 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         e.primed = true;
         e.problem = Problem::None;
         e.rotationOverride = loadRotation(rec.id, ch.channel);
-        e.client = v.client;
         if (ch.channel == 0)
             e.battery = v.battery;
         fresh.append(e);
+    }
+
+    // Same channels as before (a camera revalidated, an NVR with the same
+    // cameras): update the rows in place, so the panes showing them keep their
+    // camera and stream instead of being rebuilt.
+    bool sameChannels = fresh.size() == oldCount;
+    for (int j = 0; sameChannels && j < oldCount; ++j)
+        sameChannels = m_entries.at(first + j).channel == fresh.at(j).channel;
+    if (sameChannels) {
+        for (int j = 0; j < oldCount; ++j) {
+            Entry e = fresh.at(j);
+            const Entry &old = m_entries.at(first + j);
+            e.filesSub = old.filesSub; // learned by the last search
+            e.filesMain = old.filesMain;
+            m_entries[first + j] = e;
+        }
+        emit dataChanged(index(first), index(first + oldCount - 1));
+        if (recovered)
+            emit connectivityChanged(hostId, -1, rec.name, true);
+        return;
     }
 
     // Replace the old block with the new channel entries.
@@ -660,6 +635,8 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
         m_entries.insert(first + j, fresh.at(j));
     endInsertRows();
     emit countChanged();
+    if (recovered)
+        emit connectivityChanged(hostId, -1, rec.name, true);
 }
 
 void DeviceManager::postValidation(qint64 hostId, const Validation &v)
@@ -716,194 +693,202 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
             return;
         }
 
-        auto client = std::make_shared<ReolinkHttpClient>(rec.addr, rec.port, rec.https,
-                                                          rec.username, password);
-        // Phase 1: device info, ch0 encoding, abilities, battery, and the NVR
-        // channel list.
-        const api::BatchResult b1 = client->call(Json::array({
-            api::command(QStringLiteral("GetDevInfo")),
-            api::command(QStringLiteral("GetEnc"), Json{{"channel", 0}}, 1),
-            api::command(QStringLiteral("GetAbility"),
-                         Json{{"User", {{"userName", rec.username.toStdString()}}}}),
-            api::command(QStringLiteral("GetBatteryInfo"), Json{{"channel", 0}}),
-            api::command(QStringLiteral("GetChannelstatus")),
-        }));
+        // The device's session, as the official client opens it (BCSDK_Open):
+        // log in over Baichuan, then read what it is and can do.
+        // Its address first; away from it, by its UID (P2P) once known.
+        BcSession::Params sp;
+        sp.target = {rec.addr, 9000, rec.uid, false};
+        sp.username = rec.username;
+        sp.password = password;
+        const std::shared_ptr<BcSession> session = BcSession::acquire(sp);
+        bcdev::Device d;
+        const bool ok = session->waitReady(rec.uid.isEmpty() ? 15000 : 40000)
+                        && bcdev::readDevice(*session, rec.username, &d);
 
         Validation v;
         v.password = password;
-        v.status = tr("unreachable");
-        api::Capabilities caps;
-        QVector<api::ChannelInfo> channels;
-        QString ch0codec = QStringLiteral("h264");
-        QSize ch0MainSize, ch0SubSize;
-
-        if (b1.transportOk) {
-            for (const api::CommandResult &r : b1.results) {
-                if (r.cmd == QLatin1String("GetDevInfo") && r.ok) {
-                    const Json info = jsonObj(r.value, "DevInfo");
-                    v.hostName = QString::fromStdString(jsonStr(info, "name"));
-                    v.model = QString::fromStdString(jsonStr(info, "model"));
-                    v.channelNum = jsonInt(info, "channelNum", 1);
-                    v.online = true;
-                    v.status = tr("online");
-                    v.client = client;
-                } else if (r.cmd == QLatin1String("GetEnc") && r.ok) {
-                    const Json enc = jsonObj(r.value, "Enc");
-                    ch0codec = normalizeCodec(QString::fromStdString(
-                        jsonStr(jsonObj(enc, "mainStream"), "vType")));
-                    ch0MainSize = encStreamSize(enc, "mainStream");
-                    ch0SubSize = encStreamSize(enc, "subStream");
-                } else if (r.cmd == QLatin1String("GetAbility") && r.ok) {
-                    caps = api::parseAbility(r.value);
-                } else if (r.cmd == QLatin1String("GetBatteryInfo") && r.ok) {
-                    v.battery = api::parseBatteryInfo(r.value);
-                } else if (r.cmd == QLatin1String("GetChannelstatus") && r.ok) {
-                    channels = api::parseChannelStatus(r.value);
-                }
+        if (!ok) {
+            // Unreachable is retried with backoff; a rejected login waits for
+            // the user (each try burns the firmware's lockout counter).
+            if (session->failure() == BcSession::Failure::Rejected) {
+                v.status = tr("login rejected — check the user name and password");
+                v.problem = Problem::Auth;
+            } else {
+                v.status = tr("unreachable");
+                v.problem = Problem::Unreachable;
             }
-        }
-        if (!v.online) {
-            if (!b1.error.isEmpty())
-                v.status = b1.error;
-            // The client knows WHY: transport failures are retried with
-            // backoff; auth failures wait for the user (lockout counter).
-            switch (client->lastFailKind()) {
-            case ReolinkHttpClient::FailKind::Auth: v.problem = Problem::Auth; break;
-            case ReolinkHttpClient::FailKind::Locked: v.problem = Problem::Locked; break;
-            default: v.problem = Problem::Unreachable; break;
-            }
+            qCInfo(lcCore) << "host" << hostId << "not validated:" << session->error();
             postValidation(hostId, v);
             return;
         }
+        v.online = true;
+        v.linkMode = session->linkMode();
+        v.status = v.linkMode == QLatin1String("tcp") ? tr("online") : tr("online · remote");
         v.problem = Problem::None;
-        v.isAdmin = caps.isAdmin;
-
-        auto capsFor = [&](int ch) {
-            return ch >= 0 && ch < caps.channels.size() ? caps.channels[ch] : api::ChannelCaps{};
-        };
-
-        if (v.channelNum <= 1) {
-            // Standalone camera: a single channel 0.
+        v.session = session;
+        v.hostName = d.name;
+        v.model = d.model;
+        v.channelNum = d.channelNum;
+        v.isAdmin = d.isAdmin;
+        v.hostUid = d.uid;
+        v.battery = d.battery;
+        // A camera is its channel 0; an NVR shows its online channels.
+        for (const bcdev::Channel &c : d.channels) {
+            if (d.isNvr && !c.online)
+                continue;
+            ChannelResult cr;
+            cr.channel = c.channel;
+            cr.name = c.name.isEmpty() ? d.name : c.name;
+            cr.online = true;
+            cr.mainSize = c.mainSize;
+            cr.subSize = c.subSize;
+            cr.caps = c.caps;
+            cr.uid = d.isNvr ? QString() : d.uid; // an NVR camera's own: not known yet
+            // The codec is in every frame's header; the stream is probed.
+            cr.codec.clear();
+            v.talk = v.talk || cr.caps.talk;
+            v.channels.append(cr);
+        }
+        if (v.channels.isEmpty()) {
+            // NVR reachable but no online cameras yet — keep a placeholder.
             ChannelResult cr;
             cr.channel = 0;
-            cr.name = v.hostName;
-            cr.online = true;
-            cr.codec = ch0codec;
-            cr.mainSize = ch0MainSize;
-            cr.subSize = ch0SubSize;
-            cr.caps = capsFor(0);
-            v.talk = cr.caps.talk;
+            cr.name = d.name;
+            cr.online = false;
             v.channels.append(cr);
-        } else {
-            // NVR: one entry per ONLINE channel. Phase 2 fetches each channel's
-            // main-stream codec (main can be h265 while sub is h264).
-            QVector<api::ChannelInfo> online;
-            for (const api::ChannelInfo &c : channels)
-                if (c.online)
-                    online.append(c);
-
-            QHash<int, QString> codecByChannel;
-            QHash<int, QSize> mainSizeByChannel;
-            QHash<int, QSize> subSizeByChannel;
-            if (!online.isEmpty()) {
-                Json encCmds = Json::array();
-                for (const api::ChannelInfo &c : online)
-                    encCmds.push_back(
-                        api::command(QStringLiteral("GetEnc"), Json{{"channel", c.channel}}, 1));
-                const api::BatchResult b2 = client->call(encCmds);
-                if (b2.transportOk)
-                    for (const api::CommandResult &r : b2.results)
-                        if (r.cmd == QLatin1String("GetEnc") && r.ok) {
-                            const Json enc = jsonObj(r.value, "Enc");
-                            const int ch = jsonInt(enc, "channel", 0);
-                            codecByChannel[ch] = normalizeCodec(QString::fromStdString(
-                                jsonStr(jsonObj(enc, "mainStream"), "vType")));
-                            mainSizeByChannel[ch] = encStreamSize(enc, "mainStream");
-                            subSizeByChannel[ch] = encStreamSize(enc, "subStream");
-                        }
-            }
-            for (const api::ChannelInfo &c : online) {
-                ChannelResult cr;
-                cr.channel = c.channel;
-                cr.name = c.name;
-                cr.online = true;
-                cr.codec = codecByChannel.value(c.channel, QStringLiteral("h264"));
-                cr.mainSize = mainSizeByChannel.value(c.channel);
-                cr.subSize = subSizeByChannel.value(c.channel);
-                cr.uid = c.uid;
-                cr.caps = capsFor(c.channel);
-                v.talk = v.talk || cr.caps.talk;
-                v.channels.append(cr);
-            }
-            if (v.channels.isEmpty()) {
-                // NVR reachable but no online cameras yet — keep a placeholder.
-                ChannelResult cr;
-                cr.channel = 0;
-                cr.name = v.hostName;
-                cr.online = false;
-                v.channels.append(cr);
-            }
         }
         postValidation(hostId, v);
     }));
 }
 
-std::shared_ptr<ReolinkHttpClient> DeviceManager::clientFor(int row)
-{
-    if (row < 0 || row >= m_entries.size())
-        return {};
-    Entry &e = m_entries[row];
-    if (e.rec.kind == QLatin1String("stream") || !e.primed)
-        return {};
-    if (!e.client)
-        e.client = std::make_shared<ReolinkHttpClient>(e.rec.addr, e.rec.port, e.rec.https,
-                                                       e.rec.username, e.password);
-    return e.client;
-}
-
+// PTZ goes through the device's session (cmd 18 / 19), as the official client.
 void DeviceManager::ptzMove(int row, const QString &op, int speed)
 {
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return;
     const int ch = m_entries.at(row).channel;
     m_pending.addFuture(QtConcurrent::run(
-        [client, ch, op, speed] { client->call(Json::array({api::ptzCtrl(ch, op, speed)})); }));
+        [session, ch, op, speed] { bcset::ptzControl(*session, ch, op, speed); }));
 }
 
 void DeviceManager::ptzStop(int row)
 {
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return;
     const int ch = m_entries.at(row).channel;
     m_pending.addFuture(QtConcurrent::run(
-        [client, ch] { client->call(Json::array({api::ptzCtrl(ch, QStringLiteral("Stop"))})); }));
+        [session, ch] { bcset::ptzControl(*session, ch, QStringLiteral("Stop"), 32); }));
 }
 
 void DeviceManager::ptzPreset(int row, int presetId)
 {
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return;
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([client, ch, presetId] {
-        client->call(Json::array({api::ptzCtrl(ch, QStringLiteral("ToPos"), 32, presetId)}));
+    m_pending.addFuture(QtConcurrent::run(
+        [session, ch, presetId] { bcset::ptzToPreset(*session, ch, presetId); }));
+}
+
+QString DeviceManager::talkKey(int row) const
+{
+    const Entry &e = m_entries.at(row);
+    return QString::number(e.rec.id) + u':' + QString::number(e.channel);
+}
+
+bool DeviceManager::isTalking(int row) const
+{
+    return row >= 0 && row < m_entries.size() && !m_talks.value(talkKey(row)).isNull();
+}
+
+void DeviceManager::startTalk(int row)
+{
+    if (row < 0 || row >= m_entries.size() || isTalking(row))
+        return;
+    const Entry &e = m_entries.at(row);
+    if (!e.primed || !sessionFor(row)) {
+        emit talkStateChanged(row, false, tr("device not ready"));
+        return;
+    }
+    const QString key = talkKey(row);
+    auto *talk = new TalkSession(sessionFor(row), e.channel, this);
+    m_talks.insert(key, talk);
+    // Rows can move while talking: resolve the current row when reporting.
+    auto rowOf = [this, key] {
+        for (int i = 0; i < m_entries.size(); ++i)
+            if (talkKey(i) == key)
+                return i;
+        return -1;
+    };
+    connect(talk, &TalkSession::started, this, [this, rowOf] { emit talkStateChanged(rowOf(), true, {}); });
+    connect(talk, &TalkSession::failed, this, [this, rowOf, talk](const QString &err) {
+        talk->stop();
+        emit talkStateChanged(rowOf(), false, err);
+    });
+    connect(talk, &TalkSession::finished, this, [this, rowOf, key, talk] {
+        if (m_talks.value(key) == talk)
+            m_talks.remove(key);
+        talk->deleteLater();
+        emit talkStateChanged(rowOf(), false, {});
+    });
+    talk->start();
+}
+
+void DeviceManager::stopTalk(int row)
+{
+    if (row < 0 || row >= m_entries.size())
+        return;
+    if (TalkSession *talk = m_talks.value(talkKey(row)))
+        talk->stop(); // finished() reports the stop and frees it
+}
+
+void DeviceManager::retranslateStatuses()
+{
+    for (int i = 0; i < m_entries.size(); ++i) {
+        Entry &e = m_entries[i];
+        if (e.problem != Problem::None)
+            continue;
+        if (e.primed)
+            e.status = !e.online ? tr("offline") : e.remote ? tr("online · remote") : tr("online");
+        else
+            e.status = e.online ? tr("ready") : tr("connecting…");
+        emit dataChanged(index(i), index(i));
+    }
+}
+
+void DeviceManager::ptzPatrol(int row, int patrolId, bool start)
+{
+    const auto session = sessionFor(row);
+    if (!session) {
+        emit ptzPatrolDone(row, false, tr("device not ready"));
+        return;
+    }
+    const int ch = m_entries.at(row).channel;
+    const QString op = start ? QStringLiteral("StartPatrol") : QStringLiteral("StopPatrol");
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, op, patrolId] {
+        const bool ok = bcset::ptzControl(*session, ch, op, 32, patrolId);
+        const QString error = ok ? QString() : tr("failed");
+        QMetaObject::invokeMethod(
+            this, [this, row, ok, error] { emit ptzPatrolDone(row, ok, error); },
+            Qt::QueuedConnection);
     }));
 }
 
 void DeviceManager::snapshot(int row)
 {
-    auto client = clientFor(row);
-    if (!client) {
+    const auto session = sessionFor(row);
+    if (!session) {
         emit snapshotFailed(row, tr("device not ready"));
         return;
     }
     const int ch = m_entries.at(row).channel;
     const QString name = m_entries.at(row).chanName;
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, name] {
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, row, name] {
+        // Full resolution, over the device's session (cmd 109).
         QString error;
-        const QByteArray jpeg = client->fetchSnapshot(ch, &error);
+        const QByteArray jpeg = bcdev::snapshot(*session, ch, /*mainStream=*/true, &error);
         QString path;
         if (!jpeg.isEmpty()) {
             const QString safe =
@@ -933,13 +918,14 @@ void DeviceManager::snapshot(int row)
 void DeviceManager::captureEventThumbnail(qint64 hostId, int channel, qint64 eventId)
 {
     const int row = rowOfHostChannel(hostId, channel);
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return; // silent: an event without a thumbnail still shows its placeholder
     const int ch = channel;
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, eventId] {
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, eventId] {
+        // The sub stream is plenty for a thumbnail, and quick (cmd 109).
         QString error;
-        const QByteArray jpeg = client->fetchSnapshot(ch, &error);
+        const QByteArray jpeg = bcdev::snapshot(*session, ch, /*mainStream=*/false, &error);
         if (jpeg.isEmpty())
             return;
         // Downscale so 100 cached thumbnails stay small (a Snap off a 4K/8K
@@ -963,73 +949,101 @@ void DeviceManager::captureEventThumbnail(qint64 hostId, int channel, qint64 eve
     }));
 }
 
+std::shared_ptr<BcSession> DeviceManager::sessionFor(int row) const
+{
+    if (row < 0 || row >= m_entries.size())
+        return {};
+    const auto s = m_sessions.value(m_entries.at(row).rec.id).session;
+    return s && s->isAlive() ? s : nullptr;
+}
+
 void DeviceManager::searchRecordings(int row, int year, int month, int day)
 {
-    auto client = clientFor(row);
+    const auto session = sessionFor(row);
     const QDate date(year, month, day);
-    if (!client || !date.isValid()) {
+    if (!session || !date.isValid()) {
         emit recordingsFailed(row, tr("device not ready"));
         return;
     }
-    const int ch = m_entries.at(row).channel;
-    const QDateTime start(date, QTime(0, 0, 0));
-    const QDateTime end(date, QTime(23, 59, 59));
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, start, end, date, year, month] {
-        const api::BatchResult batch =
-            client->call(Json::array({api::searchBody(ch, start, end, QStringLiteral("sub"))}));
-        QVariantList segments;
-        QVariantList days;
-        QString error;
-        qint64 playbackOffsetSecs = 0;
-        bool haveOffset = false;
-        QVector<std::pair<qint64, qint64>> files; // (start,end) wall-clock epochs
-        if (batch.transportOk && !batch.results.isEmpty() && batch.results.first().ok) {
-            const api::SearchResult sr = api::parseSearch(batch.results.first().value);
-            for (const api::RecordingFile &f : sr.files) {
-                if (!f.start.isValid())
-                    continue;
-                const qint64 dayStart = date.startOfDay().secsTo(f.start);
-                const qint64 dayEnd = date.startOfDay().secsTo(f.end);
-                const qint64 s = qBound(qint64(0), dayStart, qint64(86400));
-                const qint64 e = qBound(s, dayEnd, qint64(86400));
-                QVariantMap seg;
-                seg["start"] = static_cast<double>(s);
-                seg["end"] = static_cast<double>(e);
-                seg["type"] = QStringLiteral("timer");
-                seg["startEpoch"] = static_cast<double>(f.start.toSecsSinceEpoch());
-                segments.append(seg);
-                files.append({f.start.toSecsSinceEpoch(),
-                              f.end.isValid() ? f.end.toSecsSinceEpoch()
-                                              : f.start.toSecsSinceEpoch() + 3600});
-                // Learn the NVR's playback-clock offset from the first valid file:
-                // the FLV endpoint seeks by PlaybackTime, not wall-clock StartTime.
-                if (!haveOffset && f.playbackTime.isValid()) {
-                    playbackOffsetSecs = f.start.secsTo(f.playbackTime);
-                    haveOffset = true;
-                }
-            }
-            for (int d : sr.recordingDays)
-                days.append(d);
-        } else {
-            error = batch.error.isEmpty() ? tr("search failed") : batch.error;
+    const Entry &e = m_entries.at(row);
+    const int ch = e.channel;
+    const QString uid = e.uid.isEmpty() ? e.hostUid : e.uid;
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, uid, row, date, year, month] {
+        auto toFiles = [](const QVector<bcrec::Recording> &recs) {
+            QVector<BcReplayFile> out;
+            for (const bcrec::Recording &r : recs)
+                out.append({r.start.toSecsSinceEpoch(),
+                            r.end.isValid() ? r.end.toSecsSinceEpoch() : r.start.toSecsSinceEpoch() + 60,
+                            r.name, r.id});
+            return out;
+        };
+        // Sub files first: they draw the timeline. Then the month's days, then
+        // the main files for HD.
+        QVector<bcrec::Recording> sub;
+        if (!bcrec::searchDay(*session, ch, uid, date, false, &sub)) {
+            QMetaObject::invokeMethod(
+                this, [this, row] { emit recordingsFailed(row, tr("search failed")); },
+                Qt::QueuedConnection);
+            return;
         }
+        QVariantList segments;
+        for (const bcrec::Recording &f : sub) {
+            const qint64 s = qBound(qint64(0), date.startOfDay().secsTo(f.start), qint64(86400));
+            const qint64 e = qBound(s, date.startOfDay().secsTo(f.end.isValid() ? f.end : f.start),
+                                    qint64(86400));
+            QVariantMap seg;
+            seg["start"] = static_cast<double>(s);
+            seg["end"] = static_cast<double>(e);
+            // Anything beyond the schedule is an alarm (blue on the timeline).
+            seg["type"] = (f.triggers & ~api::trigger::Timer) ? QStringLiteral("alarm")
+                                                              : QStringLiteral("timer");
+            seg["triggers"] = f.triggers;
+            seg["startEpoch"] = static_cast<double>(f.start.toSecsSinceEpoch());
+            segments.append(seg);
+        }
+        QVariantList days;
+        for (int d : bcrec::monthDays(*session, ch, uid, year, month))
+            days.append(d);
+        const QVector<BcReplayFile> subFiles = toFiles(sub);
         QMetaObject::invokeMethod(
             this,
-            [this, row, segments, days, year, month, error, playbackOffsetSecs, haveOffset, files] {
-                // Store the offset + file boundaries BEFORE emitting recordingsFound
-                // so a QML handler that immediately calls playbackUrl() sees them.
-                if (row >= 0 && row < m_entries.size()) {
-                    if (haveOffset)
-                        m_entries[row].playbackOffsetSecs = playbackOffsetSecs;
-                    m_entries[row].recordingFiles = files;
-                }
-                if (error.isEmpty()) {
-                    emit recordingsFound(row, segments);
-                    emit recordingDaysFound(row, year, month, days);
-                } else {
-                    emit recordingsFailed(row, error);
-                }
+            [this, row, segments, days, year, month, subFiles] {
+                // Store the files BEFORE emitting, so a handler that plays at
+                // once finds them.
+                if (row >= 0 && row < m_entries.size())
+                    m_entries[row].filesSub = subFiles;
+                emit recordingsFound(row, segments);
+                emit recordingDaysFound(row, year, month, days);
             },
+            Qt::QueuedConnection);
+        QVector<bcrec::Recording> main;
+        if (bcrec::searchDay(*session, ch, uid, date, true, &main)) {
+            const QVector<BcReplayFile> mainFiles = toFiles(main);
+            QMetaObject::invokeMethod(
+                this,
+                [this, row, mainFiles] {
+                    if (row >= 0 && row < m_entries.size())
+                        m_entries[row].filesMain = mainFiles;
+                },
+                Qt::QueuedConnection);
+        }
+    }));
+}
+
+void DeviceManager::searchRecordingDays(int row, int year, int month)
+{
+    const auto session = sessionFor(row);
+    if (!session || !QDate(year, month, 1).isValid())
+        return;
+    const Entry &e = m_entries.at(row);
+    const int ch = e.channel;
+    const QString uid = e.uid.isEmpty() ? e.hostUid : e.uid;
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, uid, row, year, month] {
+        QVariantList days;
+        for (int d : bcrec::monthDays(*session, ch, uid, year, month))
+            days.append(d);
+        QMetaObject::invokeMethod(
+            this, [this, row, year, month, days] { emit recordingDaysFound(row, year, month, days); },
             Qt::QueuedConnection);
     }));
 }
@@ -1042,175 +1056,46 @@ QSize DeviceManager::declaredSize(int row, bool mainStream) const
     return mainStream ? e.mainSize : e.subSize;
 }
 
-QString DeviceManager::playbackUrl(int row, qint64 startEpoch, bool mainStream)
-{
-    if (row < 0 || row >= m_entries.size() || startEpoch <= 0)
-        return {};
-    const Entry &e = m_entries.at(row);
-    if (e.rec.kind == QLatin1String("stream") || !e.primed)
-        return {};
-    // The FLV endpoint only accepts a start on a recording-file boundary and uses
-    // `seek` for the offset into that file — a mid-file start time is rejected. Snap
-    // to the file containing startEpoch (or the nearest earlier one for a gap).
-    qint64 fileStart = -1;
-    qint64 fileEnd = 0;
-    for (const auto &f : e.recordingFiles) {
-        if (startEpoch >= f.first && startEpoch <= f.second) {
-            fileStart = f.first;
-            fileEnd = f.second;
-            break;
-        }
-        if (f.first <= startEpoch && f.first > fileStart) { // nearest earlier start
-            fileStart = f.first;
-            fileEnd = f.second;
-        }
-    }
-    if (fileStart < 0)
-        return {}; // no recording covers this moment
-    const int seekSecs = static_cast<int>(qBound<qint64>(0, startEpoch - fileStart,
-                                                         qMax<qint64>(0, fileEnd - fileStart)));
-    // `start` is the file's PlaybackTime (its wall-clock start + the device's UTC
-    // offset), which the NVR requires as a boundary.
-    const QDateTime start = QDateTime::fromSecsSinceEpoch(fileStart + e.playbackOffsetSecs);
-    // Reuse the app's existing session token so the NVR doesn't reject a second
-    // login for the playback stream. Falls back to user/password if no token yet.
-    const QString token = e.client ? e.client->token() : QString();
-    return api::playbackFlvUrl(e.rec.addr, e.rec.port, e.rec.https, e.channel, mainStream, start,
-                               e.rec.username, e.password, token, seekSecs);
-}
-
-void DeviceManager::requestHdClip(int row, qint64 startEpoch, int durationSecs)
-{
-    auto client = clientFor(row);
-    if (!client || row < 0 || row >= m_entries.size() || startEpoch <= 0) {
-        emit hdClipFailed(row, tr("device not ready"));
-        return;
-    }
-    const Entry &e = m_entries.at(row);
-    if (e.rec.kind == QLatin1String("stream") || !e.primed) {
-        emit hdClipFailed(row, tr("no recordings on this device"));
-        return;
-    }
-    const int ch = e.channel;
-    const QString host = e.rec.addr;
-    const int port = e.rec.port;
-    const bool https = e.rec.https;
-    // NvrDownload takes wall-clock local times (like Search), not the FLV
-    // playback clock — no offset applied here.
-    const QDateTime start = QDateTime::fromSecsSinceEpoch(startEpoch);
-    const QDateTime end = start.addSecs(qBound(2, durationSecs, 120));
-    const QString startStamp = start.toString(QStringLiteral("yyyyMMddHHmmss"));
-
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, host, port, https, start, end,
-                                           startStamp, startEpoch] {
-        QString error;
-        QString localPath;
-        const api::BatchResult b =
-            client->call(Json::array({api::nvrDownloadBody(ch, start, end, QStringLiteral("main"))}));
-        if (b.transportOk && !b.results.isEmpty() && b.results.first().ok) {
-            const QVector<api::DownloadFile> files = api::parseNvrDownload(b.results.first().value);
-            // Prefer the clip named for the requested start; otherwise the largest.
-            api::DownloadFile pick;
-            for (const api::DownloadFile &f : files)
-                if (f.fileName.contains(startStamp)) {
-                    pick = f;
-                    break;
-                }
-            if (pick.fileName.isEmpty())
-                for (const api::DownloadFile &f : files)
-                    if (f.size > pick.size)
-                        pick = f;
-
-            if (pick.fileName.isEmpty()) {
-                error = tr("no clip available for this moment");
-            } else {
-                const QString url =
-                    api::downloadUrl(host, port, https, pick.fileName, client->token());
-                const QString dir = Paths::dataDir() + QStringLiteral("/hdcache");
-                QDir().mkpath(dir);
-                // Keep only the current clip — these files are large.
-                for (const QFileInfo &fi : QDir(dir).entryInfoList(QDir::Files))
-                    QFile::remove(fi.absoluteFilePath());
-                const QString path = dir + QStringLiteral("/clip_") + startStamp + QStringLiteral(".mp4");
-                QString dlErr;
-                if (client->downloadToFile(url, path, 120, &dlErr)) // slow NVR download
-                    localPath = path;
-                else
-                    error = dlErr.isEmpty() ? tr("clip download failed") : dlErr;
-            }
-        } else {
-            error = b.error.isEmpty() ? tr("clip request failed") : b.error;
-        }
-        QMetaObject::invokeMethod(
-            this,
-            [this, row, localPath, startEpoch, error] {
-                if (!localPath.isEmpty())
-                    emit hdClipReady(row, localPath, startEpoch);
-                else
-                    emit hdClipFailed(row, error);
-            },
-            Qt::QueuedConnection);
-    }));
-}
 
 void DeviceManager::exportClip(int row, qint64 startEpoch, int durationSecs)
 {
-    auto client = clientFor(row);
-    if (!client || row < 0 || row >= m_entries.size() || startEpoch <= 0) {
+    const auto session = sessionFor(row);
+    if (!session || startEpoch <= 0) {
         emit clipExportFailed(row, tr("device not ready"));
         return;
     }
     const Entry &e = m_entries.at(row);
     const int ch = e.channel;
-    const QString host = e.rec.addr;
-    const int port = e.rec.port;
-    const bool https = e.rec.https;
+    const QString uid = e.uid.isEmpty() ? e.hostUid : e.uid;
+    const QSize size = e.mainSize;
     const QString safe = QString(e.chanName.isEmpty() ? e.rec.name : e.chanName)
                              .replace(QRegularExpression(QStringLiteral("[^\\w-]")),
                                       QStringLiteral("_"));
     const QDateTime start = QDateTime::fromSecsSinceEpoch(startEpoch);
     const QDateTime end = start.addSecs(qBound(2, durationSecs, 300));
-    const QString startStamp = start.toString(QStringLiteral("yyyyMMddHHmmss"));
-
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, host, port, https, start, end,
-                                           startStamp, safe] {
+    // The main stream of [start, end], cut by the device (cmd 143) and written
+    // into an MP4 here, as the official client exports a clip.
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, uid, size, row, start, end, safe] {
+        const QString path = Paths::recordingsDir() + u'/' + safe + u'_'
+                             + start.toString(QStringLiteral("yyyyMMdd_hhmmss")) + QStringLiteral(".mp4");
+        BcClipWriter writer(path);
         QString error;
-        QString saved;
-        const api::BatchResult b =
-            client->call(Json::array({api::nvrDownloadBody(ch, start, end, QStringLiteral("main"))}));
-        if (b.transportOk && !b.results.isEmpty() && b.results.first().ok) {
-            const QVector<api::DownloadFile> files = api::parseNvrDownload(b.results.first().value);
-            api::DownloadFile pick;
-            for (const api::DownloadFile &f : files)
-                if (f.fileName.contains(startStamp)) { pick = f; break; }
-            if (pick.fileName.isEmpty())
-                for (const api::DownloadFile &f : files)
-                    if (f.size > pick.size)
-                        pick = f;
-            if (pick.fileName.isEmpty()) {
-                error = tr("no recording covers this moment");
-            } else {
-                const QString url =
-                    api::downloadUrl(host, port, https, pick.fileName, client->token());
-                const QString path = Paths::recordingsDir() + u'/' + safe + u'_'
-                                     + start.toString(QStringLiteral("yyyyMMdd_hhmmss"))
-                                     + QStringLiteral(".mp4");
-                QString dlErr;
-                if (client->downloadToFile(url, path, 300, &dlErr)) // NVR downloads are slow
-                    saved = path;
-                else
-                    error = dlErr.isEmpty() ? tr("download failed") : dlErr;
-            }
-        } else {
-            error = b.error.isEmpty() ? tr("clip request failed") : b.error;
-        }
+        const bool got = bcrec::downloadClip(
+            *session, ch, uid, start, end, /*mainStream=*/true,
+            [&writer, size](const BcMediaParser::VideoFrame &f, int w, int h) {
+                writer.addVideo(f, w > 0 ? w : size.width(), h > 0 ? h : size.height());
+            },
+            [&writer](const BcMediaParser::AudioFrame &a) { writer.addAudio(a); }, nullptr, &error);
+        const bool ok = writer.finish(got ? &error : nullptr) && got;
+        if (!ok)
+            QFile::remove(path);
         QMetaObject::invokeMethod(
             this,
-            [this, row, saved, error] {
-                if (!saved.isEmpty())
-                    emit clipExported(row, saved);
+            [this, row, ok, path, error] {
+                if (ok)
+                    emit clipExported(row, path);
                 else
-                    emit clipExportFailed(row, error);
+                    emit clipExportFailed(row, error.isEmpty() ? tr("export failed") : error);
             },
             Qt::QueuedConnection);
     }));
@@ -1231,16 +1116,35 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     p.username = e.rec.username;
     p.password = e.password;
     p.channel = e.channel;
-    p.uid = e.uid;
+    p.linkUid = e.rec.uid; // the device's session: its address, else its UID
+    p.uid = e.uid.isEmpty() ? e.hostUid : e.uid;
     p.mainStream = mainStream;
-    p.startEpoch = startEpoch; // <= 0 = live (cmd 3 Preview), else by-time playback
+    p.startEpoch = startEpoch; // <= 0 = live (cmd 3 Preview), else recorded playback
+    if (startEpoch > 0) {
+        // The searched day's files of this stream (the other one if missing).
+        const bool useMain = mainStream ? !e.filesMain.isEmpty() : e.filesSub.isEmpty();
+        p.replayFiles = useMain ? e.filesMain : e.filesSub;
+        p.mainStream = mainStream = useMain;
+    }
+    // The stream's sound plays through the player.
+    auto audio = player->packetAudioInput();
+    p.onAudio = [audio](const BcMediaParser::AudioFrame &a) { audio(a.data, a.aac); };
 
     auto client = std::make_shared<BaichuanClient>(p);
-    client->start();
     if (startEpoch > 0) {
-        m_playbackClient = client; // weak — for in-place seek; StreamPlayer owns lifetime
-        m_playbackRow = row;
+        m_playbackClients.insert(row, client); // weak — for in-place seek
+        // The client paces recordings, at the player's speed.
+        client->setRate(player->playbackRate());
+        delete player->findChild<QObject *>(QStringLiteral("rl_bcRate"));
+        auto *ctx = new QObject(player);
+        ctx->setObjectName(QStringLiteral("rl_bcRate"));
+        const std::weak_ptr<BaichuanClient> weak = client;
+        connect(player, &StreamPlayer::playbackRateChanged, ctx, [player, weak] {
+            if (const auto c = weak.lock())
+                c->setRate(player->playbackRate());
+        });
     }
+    client->start();
     // The sub stream is always H.264; the main stream's codec is per-channel.
     // An UNKNOWN main codec (firmware omitted/mangled GetEnc vType — issue #4)
     // passes an empty format so avformat probes the stream instead: forcing
@@ -1255,7 +1159,8 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     player->setPacketSource(
         [client](unsigned char *buf, int size) { return client->read(buf, size); },
         format,
-        [client] { client->stop(); });
+        [client] { client->stop(); },
+        /*pausable=*/startEpoch > 0);
     player->start();
 }
 
@@ -1274,65 +1179,49 @@ void DeviceManager::startBaichuanLive(int row, StreamPlayer *player, bool mainSt
 
 bool DeviceManager::seekBaichuanPlayback(int row, qint64 startEpoch)
 {
-    if (row != m_playbackRow)
-        return false;
-    auto client = m_playbackClient.lock();
+    const auto client = m_playbackClients.value(row).lock();
     return client && client->seek(startEpoch);
 }
 
-void DeviceManager::fetchSettings(int row, const QStringList &getCommands)
+void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const QString &tag)
 {
-    auto client = clientFor(row);
-    if (!client || getCommands.isEmpty()) {
-        emit settingsFailed(row, tr("device not ready"));
+    // Every command goes through the device's session, offered to the panels
+    // in the HTTP API's JSON shape they were written for (bcset).
+    const auto session = sessionFor(row);
+    if (!session || getCommands.isEmpty()) {
+        if (tag.isEmpty())
+            emit settingsFailed(row, tr("device not ready"));
+        else
+            emit settingsLoaded(row, {{QStringLiteral("_tag"), tag},
+                                      {QStringLiteral("_error"), tr("device not ready")}});
         return;
     }
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, getCommands] {
+    const QString user = m_entries.at(row).rec.username;
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, user, getCommands, tag] {
         QVariantMap values;
         QStringList failed;
         QString lastError;
-        // Fetch one command, retrying only transient transport failures: NVRs (e.g.
-        // RLN8-410) intermittently return HTTP 502 when proxying a camera command
-        // under load. Retry a few times with a short backoff (the lighter action=0
-        // on the 2nd try); a DEFINITIVE device error (rspCode set — e.g. -9 "not
-        // supported") stops immediately so we don't hammer the NVR for nothing.
-        auto fetchOne = [&](const QString &cmd) {
-            api::CommandResult r;
-            for (int attempt = 0; attempt < 3; ++attempt) {
-                r = client->callOne(cmd, Json{{"channel", ch}}, attempt == 1 ? 0 : 1);
-                if (r.ok || r.rspCode != 0)
-                    break;
-                QThread::msleep(400);
-            }
-            return r;
-        };
-        // Newer firmware renamed several commands with a "V20" suffix (a different
-        // schedule shape). If the device says the legacy name isn't supported, try
-        // the V20 variant and store it under the legacy key so panels bind uniformly.
-        static const QHash<QString, QString> v20Alt = {
-            {QStringLiteral("GetPush"), QStringLiteral("GetPushV20")},
-            {QStringLiteral("GetEmail"), QStringLiteral("GetEmailV20")},
-            {QStringLiteral("GetFtp"), QStringLiteral("GetFtpV20")},
-            {QStringLiteral("GetRec"), QStringLiteral("GetRecV20")}};
         for (const QString &c : getCommands) {
-            api::CommandResult r = fetchOne(c);
-            if (!r.ok && r.rspCode != 0 && v20Alt.contains(c))
-                r = fetchOne(v20Alt.value(c));
-            if (r.ok) {
-                values.insert(c, api::toVariant(r.value));
+            // Bounds differ per model (zoom 0..34 vs 0..41, focus 0..230 vs
+            // 0..1104 on two RLC-823A): they come as "<Cmd>Range".
+            QVariant value, range;
+            QString error;
+            if (bcset::get(*session, ch, c, &value, &range, &error, user)) {
+                values.insert(c, value);
+                if (range.isValid())
+                    values.insert(c + QStringLiteral("Range"), range);
             } else {
                 failed.append(c);
-                if (!r.detail.isEmpty())
-                    lastError = r.detail;
+                lastError = error;
             }
         }
         QMetaObject::invokeMethod(
             this,
-            [this, row, values, failed, lastError] {
-                if (values.isEmpty()) {
-                    emit settingsFailed(row, lastError.isEmpty() ? tr("settings fetch failed")
-                                                                 : lastError);
+            [this, row, values, failed, lastError, tag] {
+                const QString error = lastError.isEmpty() ? tr("settings fetch failed") : lastError;
+                if (values.isEmpty() && tag.isEmpty()) {
+                    emit settingsFailed(row, error);
                     return;
                 }
                 // Report which commands the device refused so panels can show an
@@ -1344,6 +1233,11 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands)
                         f.append(c);
                     v.insert(QStringLiteral("_failed"), f);
                 }
+                if (!tag.isEmpty()) {
+                    v.insert(QStringLiteral("_tag"), tag);
+                    if (values.isEmpty())
+                        v.insert(QStringLiteral("_error"), error);
+                }
                 emit settingsLoaded(row, v);
             },
             Qt::QueuedConnection);
@@ -1352,8 +1246,8 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands)
 
 void DeviceManager::applySetting(int row, const QString &setCommand, const QVariantMap &param)
 {
-    auto client = clientFor(row);
-    if (!client) {
+    const auto session = sessionFor(row);
+    if (!session) {
         emit settingApplied(row, setCommand, false, tr("device not ready"));
         return;
     }
@@ -1361,15 +1255,15 @@ void DeviceManager::applySetting(int row, const QString &setCommand, const QVari
         emit settingApplied(row, setCommand, false, tr("requires an administrator account"));
         return;
     }
-    const Json p = api::toJson(param);
-    m_pending.addFuture(QtConcurrent::run([this, client, row, setCommand, p] {
-        const api::CommandResult r = client->callOne(setCommand, p, /*action=*/0);
-        const bool ok = r.ok;
-        const QString error = ok ? QString() : (r.detail.isEmpty() ? tr("failed") : r.detail);
+    const int ch = m_entries.at(row).channel;
+    const QString user = m_entries.at(row).rec.username;
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, user, setCommand, param] {
+        QString error;
+        const bool ok = bcset::set(*session, ch, setCommand, param, &error, user);
         QMetaObject::invokeMethod(
             this,
             [this, row, setCommand, ok, error] {
-                emit settingApplied(row, setCommand, ok, error);
+                emit settingApplied(row, setCommand, ok, ok ? QString() : error);
             },
             Qt::QueuedConnection);
     }));
@@ -1395,8 +1289,7 @@ QVariantMap DeviceManager::hostInfo(qint64 hostId) const
     m["kind"] = host->rec.kind;
     m["model"] = host->rec.model;
     m["addr"] = host->rec.addr;
-    m["port"] = host->rec.port;
-    m["https"] = host->rec.https;
+    m["uid"] = host->rec.uid;
     m["username"] = host->rec.username;
     m["online"] = onlineCount > 0;
     m["channelCount"] = channelCount;
@@ -1439,6 +1332,16 @@ QVariantMap DeviceManager::cameraInfo(int row) const
     m["isAdmin"] = e.isAdmin;
     m["capPtz"] = e.caps.ptz;
     m["capZoom"] = e.caps.zoom;
+    m["capFocus"] = e.caps.focus;
+    m["capPanTilt"] = e.caps.panTilt;
+    m["capPtzPreset"] = e.caps.ptzPreset;
+    m["capPtzGuard"] = e.caps.ptzGuard;
+    m["capPtzPatrol"] = e.caps.ptzPatrol;
+    m["capPtzSpeed"] = e.caps.ptzSpeed;
+    m["capPtzCheck"] = e.caps.ptzCheck;
+    m["capAutoTrack"] = e.caps.autoTrack;
+    m["capAutoFocus"] = e.caps.autoFocus;
+    m["capZoomFocusPos"] = e.caps.zoomFocusPos;
     m["capAudio"] = e.caps.audio;
     m["capSiren"] = e.caps.siren;
     m["capFloodlight"] = e.caps.floodlight;
@@ -1473,35 +1376,31 @@ QVariantList DeviceManager::hostIds() const
 void DeviceManager::toggleFloodlight(int row)
 {
     const QString cmd = QStringLiteral("SetWhiteLed");
-    auto client = clientFor(row);
-    if (!client) {
+    const auto session = sessionFor(row);
+    if (!session) {
         emit settingApplied(row, cmd, false, tr("device not ready"));
         return;
     }
-    if (row < m_entries.size() && !m_entries.at(row).isAdmin) {
+    if (!m_entries.at(row).isAdmin) {
         emit settingApplied(row, cmd, false, tr("requires an administrator account"));
         return;
     }
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, cmd] {
-        // Read the current config so the toggle flips only on/off and leaves the
-        // user's brightness + auto/schedule mode intact.
-        const api::CommandResult got =
-            client->callOne(QStringLiteral("GetWhiteLed"), Json{{"channel", ch}}, /*action=*/1);
-        bool ok = false;
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, cmd] {
+        // Flip the light as it is now (cmd 288), leaving its settings alone.
+        QVariant value, range;
         QString error;
-        if (got.ok) {
-            const Json wl = jsonObj(got.value, "WhiteLed");
-            Json set = Json{{"channel", ch}, {"state", jsonInt(wl, "state", 0) ? 0 : 1}};
-            for (const char *k : {"mode", "bright", "LightingSchedule"})
-                if (wl.contains(k))
-                    set[k] = jsonRef(wl, k); // preserve settable fields verbatim
-            const api::CommandResult put =
-                client->callOne(cmd, Json{{"WhiteLed", set}}, /*action=*/0);
-            ok = put.ok;
-            error = ok ? QString() : (put.detail.isEmpty() ? tr("failed") : put.detail);
-        } else {
-            error = got.detail.isEmpty() ? tr("floodlight not supported") : got.detail;
+        bool ok = bcset::get(*session, ch, QStringLiteral("GetWhiteLed"), &value, &range, &error);
+        if (ok) {
+            const int state = value.toMap().value(QStringLiteral("WhiteLed")).toMap()
+                                  .value(QStringLiteral("state")).toInt();
+            ok = bcset::set(*session, ch, cmd,
+                            {{QStringLiteral("WhiteLed"),
+                              QVariantMap{{QStringLiteral("channel"), ch},
+                                          {QStringLiteral("state"), state ? 0 : 1}}}},
+                            &error);
+        } else if (error.isEmpty()) {
+            error = tr("floodlight not supported");
         }
         QMetaObject::invokeMethod(
             this, [this, row, cmd, ok, error] { emit settingApplied(row, cmd, ok, error); },
@@ -1534,14 +1433,12 @@ void DeviceManager::fetchAlerts(int row)
         emit alertsLoaded(row, {});
         return;
     }
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch] {
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch] {
         QVariantMap m;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             const int push = bc.readEnable(219, ch);
             const int email = bc.readEnable(217, ch);
@@ -1621,13 +1518,11 @@ void DeviceManager::setAlertEnable(int row, const QString &kind, bool enable)
     quint32 getCmd = 0, setCmd = 0;
     if (!alertCmds(kind, getCmd, setCmd))
         return;
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch, kind, getCmd, setCmd, enable] {
-        BaichuanControl bc(p);
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch, kind, getCmd, setCmd, enable] {
+        BaichuanControl bc(session);
         const bool ok = bc.open() && bc.writeEnable(getCmd, setCmd, ch, enable);
         bc.close();
         QMetaObject::invokeMethod(
@@ -1653,11 +1548,12 @@ void DeviceManager::fetchRecSchedule(int row)
         emit recScheduleLoaded(row, {});
         return;
     }
-    BaichuanControl::Params p{e.rec.addr, 9000, e.rec.username, e.password};
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch] {
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch] {
         QVariantMap m;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             const QByteArray xml = bc.get(81, ch);
             bc.close();
@@ -1695,14 +1591,15 @@ void DeviceManager::writeRecSchedule(int row, const QString &type, const QString
                             tr("requires an administrator account"));
         return;
     }
-    BaichuanControl::Params p{e.rec.addr, 9000, e.rec.username, e.password};
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
     const QByteArray typeTag = "<type>" + type.toLatin1() + "</type>";
     const QByteArray newTable = table.toLatin1();
-    m_pending.addFuture(QtConcurrent::run([this, row, p, ch, typeTag, newTable] {
+    m_pending.addFuture(QtConcurrent::run([this, row, session, ch, typeTag, newTable] {
         bool ok = false;
         QString err;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             QByteArray xml = bc.get(81, ch);
             const int t = xml.indexOf(typeTag);
@@ -1743,15 +1640,13 @@ void DeviceManager::fetchBcConfig(int row, int cmdId, const QString &reqBody)
         emit bcConfigLoaded(row, cmdId, {});
         return;
     }
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
     const QByteArray body = reqBody.toUtf8();
-    m_pending.addFuture(QtConcurrent::run([this, row, cmdId, p, ch, body] {
+    m_pending.addFuture(QtConcurrent::run([this, row, cmdId, session, ch, body] {
         QVariantMap m;
-        BaichuanControl bc(p);
+        BaichuanControl bc(session);
         if (bc.open()) {
             m = bc.getConfigFlat(static_cast<quint32>(cmdId), ch, body);
             bc.close();
@@ -1773,15 +1668,13 @@ void DeviceManager::writeBcConfig(int row, int getCmd, int setCmd, const QVarian
         emit settingApplied(row, label, false, tr("requires an administrator account"));
         return;
     }
-    BaichuanControl::Params p;
-    p.host = e.rec.addr;
-    p.username = e.rec.username;
-    p.password = e.password;
+    // In the device's session, as every command of the official client.
+    const std::shared_ptr<BcSession> session = sessionFor(row);
     const int ch = e.channel;
     const QByteArray body = reqBody.toUtf8();
     m_pending.addFuture(QtConcurrent::run(
-        [this, row, getCmd, setCmd, p, ch, changes, body, label] {
-            BaichuanControl bc(p);
+        [this, row, getCmd, setCmd, session, ch, changes, body, label] {
+            BaichuanControl bc(session);
             const bool ok = bc.open()
                 && bc.writeFields(static_cast<quint32>(getCmd), static_cast<quint32>(setCmd), ch,
                                   changes, body);
@@ -1806,25 +1699,20 @@ QString DeviceManager::nameAt(int row) const
 
 QString DeviceManager::liveUrl(int row, bool mainStream)
 {
+    Q_UNUSED(mainStream)
     if (row < 0 || row >= m_entries.size())
         return {};
     const Entry &e = m_entries.at(row);
-
-    if (e.rec.kind == QLatin1String("stream")) {
-        if (e.rec.username.isEmpty() && e.password.isEmpty())
-            return e.rec.addr;
-        QUrl u(e.rec.addr);
-        u.setUserName(e.rec.username);
-        u.setPassword(e.password);
-        return u.toString(QUrl::FullyEncoded);
-    }
-
-    if (!e.primed)
+    // Only a plain stream device has a URL: Reolink cameras and NVRs stream
+    // live inside their Baichuan session (startBaichuanLive).
+    if (e.rec.kind != QLatin1String("stream"))
         return {};
-    // Sub stream ("Fluent") is h264 on all models; main ("Clear") may be h265.
-    const QString codec = (mainStream && !e.mainCodec.isEmpty()) ? e.mainCodec
-                                                                 : QStringLiteral("h264");
-    return api::rtspUrl(e.rec.addr, e.rec.username, e.password, e.channel, mainStream, codec);
+    if (e.rec.username.isEmpty() && e.password.isEmpty())
+        return e.rec.addr;
+    QUrl u(e.rec.addr);
+    u.setUserName(e.rec.username);
+    u.setPassword(e.password);
+    return u.toString(QUrl::FullyEncoded);
 }
 
 } // namespace rl

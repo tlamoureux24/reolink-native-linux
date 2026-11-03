@@ -11,6 +11,7 @@ Rectangle {
 
     property int currentIndex: (typeof initialPage !== "undefined") ? initialPage : 0
     signal fullscreenRequested()
+    signal settingsRequested()
 
     RowLayout {
         anchors.fill: parent
@@ -89,6 +90,30 @@ Rectangle {
         }
 
         Item { Layout.fillWidth: true }
+
+        // Client settings (the official client's top-right gear).
+        Rectangle {
+            width: 32
+            height: 32
+            radius: Theme.radius
+            color: gearArea.containsMouse ? Theme.surfaceAlt : "transparent"
+            Text { anchors.centerIn: parent; text: "⚙"; color: Theme.textMuted; font.pixelSize: 17 }
+            MouseArea {
+                id: gearArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.settingsRequested()
+            }
+            ToolTip {
+                visible: gearArea.containsMouse
+                delay: 500
+                x: (parent.width - width) / 2
+                y: parent.height + 6
+                contentItem: Text { text: qsTr("Client settings"); color: Theme.text; font.pixelSize: 11 }
+                background: Rectangle { color: Theme.surfaceAlt; border.color: Theme.border; radius: 4 }
+            }
+        }
 
         Rectangle {
             width: 32

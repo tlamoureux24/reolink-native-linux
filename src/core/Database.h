@@ -15,6 +15,8 @@ struct HostRecord {
     bool https = true;
     QString username;
     QString model;
+    QString uid;   // device UID, for remote access by UID (P2P); learned or entered
+    QString cache; // schema v3 column, written by earlier builds; unused
 };
 
 struct EventRecord {

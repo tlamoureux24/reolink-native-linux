@@ -1,22 +1,34 @@
 import QtQuick
 import QtQuick.Layouts
 import ReolinkApp
+import ReolinkApp.Core
 
 // Compact month calendar. Emits dateSelected(year, month, day) — month is
 // 1-based. Days that have recordings can be marked via markedDays.
+// Stateless: year/month (the month shown) and selYear/selMonth/selDay (the
+// selected date) are owned by the parent. The arrows emit monthNavigated and
+// a tap emits dateSelected; assigning these properties here would break the
+// parent's bindings and leave the calendar stuck on a stale month/selection.
 Column {
     id: root
     spacing: 6
 
     property int year: 2026
     property int month: 7           // 1-based
+    property int selYear: year
+    property int selMonth: month
     property int selDay: 9
-    property var markedDays: []      // days (1..31) with recordings → blue dot
+    property var markedDays: []      // days (1..31) of the SHOWN month with recordings
 
     signal dateSelected(int year, int month, int day)
+    signal monthNavigated(int year, int month)
 
     function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
-    function firstWeekday(y, m) { return new Date(y, m - 1, 1).getDay(); } // 0=Sun
+    // Weeks start on the locale's first day (Monday in French, Sunday in US
+    // English); headers use the locale's own narrow day names.
+    readonly property var loc: Qt.locale(AppSettings.localeName) // the app's language
+    readonly property int weekStart: loc.firstDayOfWeek % 7 // Sunday = 0
+    function firstWeekday(y, m) { return (new Date(y, m - 1, 1).getDay() - weekStart + 7) % 7; }
 
     RowLayout {
         width: parent.width
@@ -26,14 +38,14 @@ Column {
             Text { anchors.centerIn: parent; text: "‹"; color: Theme.text; font.pixelSize: 16 }
             HoverHandler { id: prevHover }
             TapHandler { onTapped: {
-                if (root.month === 1) { root.month = 12; root.year--; }
-                else root.month--;
+                if (root.month === 1) root.monthNavigated(root.year - 1, 12);
+                else root.monthNavigated(root.year, root.month - 1);
             } }
         }
         Text {
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
-            text: Qt.locale().standaloneMonthName(root.month - 1) + " " + root.year
+            text: root.loc.standaloneMonthName(root.month - 1) + " " + root.year
             color: Theme.text
             font.pixelSize: 13
             font.bold: true
@@ -44,8 +56,8 @@ Column {
             Text { anchors.centerIn: parent; text: "›"; color: Theme.text; font.pixelSize: 16 }
             HoverHandler { id: nextHover }
             TapHandler { onTapped: {
-                if (root.month === 12) { root.month = 1; root.year++; }
-                else root.month++;
+                if (root.month === 12) root.monthNavigated(root.year + 1, 1);
+                else root.monthNavigated(root.year, root.month + 1);
             } }
         }
     }
@@ -54,7 +66,9 @@ Column {
         columns: 7
         spacing: 2
         Repeater {
-            model: ["S", "M", "T", "W", "T", "F", "S"]
+            model: [0, 1, 2, 3, 4, 5, 6].map(function (i) {
+                return root.loc.dayName((root.weekStart + i) % 7, Locale.NarrowFormat);
+            })
             Text {
                 required property string modelData
                 width: 30; height: 18
@@ -76,6 +90,7 @@ Column {
                 property int dayNum: index - root.firstWeekday(root.year, root.month) + 1
                 property bool valid: dayNum >= 1 && dayNum <= root.daysInMonth(root.year, root.month)
                 property bool selected: valid && dayNum === root.selDay
+                                        && root.year === root.selYear && root.month === root.selMonth
                 width: 30; height: 28
                 Rectangle {
                     anchors.fill: parent
@@ -100,10 +115,7 @@ Column {
                     HoverHandler { id: dayHover; enabled: parent.parent.valid }
                     TapHandler {
                         enabled: parent.parent.valid
-                        onTapped: {
-                            root.selDay = parent.parent.dayNum;
-                            root.dateSelected(root.year, root.month, parent.parent.dayNum);
-                        }
+                        onTapped: root.dateSelected(root.year, root.month, parent.parent.dayNum)
                     }
                 }
             }

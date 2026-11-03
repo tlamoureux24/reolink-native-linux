@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/SingleInstance.h"
+#include "core/AppSettings.h"
 #include "core/Updater.h"
 #include "ui/TrayIcon.h"
 #include "device/DeviceDiscovery.h"
@@ -140,6 +141,15 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // Client preferences first: the translator must be in place before any
+    // tr() runs (tray menu, device status strings) and before QML loads.
+    rl::AppSettings appSettings;
+    QQmlEngine *enginePtr = nullptr;
+    appSettings.installTranslator([&enginePtr] {
+        if (enginePtr)
+            enginePtr->retranslate(); // live language switch
+    });
+
     rl::Database database(rl::Paths::databaseFile());
     if (!database.open()) {
         qCCritical(lcCore) << "Cannot open database:" << database.lastError();
@@ -158,8 +168,10 @@ int main(int argc, char *argv[])
     qmlRegisterSingletonInstance("ReolinkApp.Core", 1, 0, "Discovery", &discovery);
     qmlRegisterSingletonInstance("ReolinkApp.Core", 1, 0, "Updater", &updater);
     qmlRegisterSingletonInstance("ReolinkApp.Core", 1, 0, "Tray", &tray);
+    qmlRegisterSingletonInstance("ReolinkApp.Core", 1, 0, "AppSettings", &appSettings);
 
     QQmlApplicationEngine engine;
+    enginePtr = &engine;
     // Lets tests/screenshots open a specific page (0=Live,1=Playback,2=Events,3=Settings).
     engine.rootContext()->setContextProperty(
         QStringLiteral("initialPage"), qEnvironmentVariableIntValue("RL_INITIAL_PAGE"));
@@ -171,6 +183,25 @@ int main(int argc, char *argv[])
         QStringLiteral("playbackAutoplay"), qEnvironmentVariableIsSet("RL_PLAYBACK_AUTOPLAY"));
     engine.rootContext()->setContextProperty(
         QStringLiteral("playbackGrid"), qEnvironmentVariableIsSet("RL_PLAYBACK_GRID"));
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("playbackDate"), qEnvironmentVariable("RL_PLAYBACK_DATE"));
+    // RL_LIVE_AUDIO=<row>: turn that camera's sound on, at zero volume, so the
+    // log shows whether it decodes (headless checks, nothing heard).
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("liveAudioRow"),
+        qEnvironmentVariableIsSet("RL_LIVE_AUDIO") ? qEnvironmentVariableIntValue("RL_LIVE_AUDIO") : -1);
+    // RL_LIVE_PTZ=<row>: maximize that camera with its PTZ pad and panel open.
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("livePtzRow"),
+        qEnvironmentVariableIsSet("RL_LIVE_PTZ") ? qEnvironmentVariableIntValue("RL_LIVE_PTZ") : -1);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("settingsCategory"), qEnvironmentVariable("RL_SETTINGS_CATEGORY"));
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("settingsRow"),
+        qEnvironmentVariableIsSet("RL_SETTINGS_ROW") ? qEnvironmentVariableIntValue("RL_SETTINGS_ROW") : -1);
+    // RL_CLIENT_SETTINGS=1: open the client settings dialog (screenshots).
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("openClientSettings"), qEnvironmentVariableIsSet("RL_CLIENT_SETTINGS"));
     engine.rootContext()->setContextProperty(QStringLiteral("startHidden"),
                                              parser.isSet(hiddenOption) && tray.available());
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
@@ -213,7 +244,28 @@ int main(int argc, char *argv[])
 
     // Check GitHub for a newer release shortly after the UI is up (skipped in
     // the headless screenshot mode). Silent unless an update is found.
-    if (!parser.isSet(smokeOption))
+    // TEST HOOK: RL_TALK_ROW=<row> talks to that camera from 8 s to 18 s after
+    // start (microphone included), to check the whole talk path headlessly.
+    if (qEnvironmentVariableIsSet("RL_TALK_ROW")) {
+        const int row = qEnvironmentVariableIntValue("RL_TALK_ROW");
+        QTimer::singleShot(8000, &devices, [&devices, row] { devices.startTalk(row); });
+        QTimer::singleShot(18000, &devices, [&devices, row] { devices.stopTalk(row); });
+    }
+
+    // TEST HOOK: RL_SWITCH_LANGUAGE=<code> switches the language 10 s after
+    // start, so a live switch can be checked in --smoke screenshots.
+    if (qEnvironmentVariableIsSet("RL_SWITCH_LANGUAGE"))
+        QTimer::singleShot(10000, &appSettings, [&appSettings] {
+            appSettings.setLanguage(qEnvironmentVariable("RL_SWITCH_LANGUAGE"));
+        });
+
+    // Texts computed once (event times, camera status words) follow a switch.
+    QObject::connect(&appSettings, &rl::AppSettings::languageChanged, &app, [&events, &devices] {
+        events.refreshTexts();
+        devices.retranslateStatuses();
+    });
+
+    if (!parser.isSet(smokeOption) && appSettings.checkUpdates())
         QTimer::singleShot(3000, &updater, &rl::Updater::check);
 
     // TEST HOOK (local): RL_TEST_NOTIFY=1 fires a synthetic detection through

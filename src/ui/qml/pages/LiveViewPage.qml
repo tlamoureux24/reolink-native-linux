@@ -18,6 +18,27 @@ Item {
     property int preset: 4
     property int maximizedIndex: -1
     property int selectedIndex: -1
+    property int audioIndex: -1      // the one audible camera (device row), -1 = none
+
+    // Tour (official "scrollview"): show each camera maximized in turn, for
+    // AppSettings.tourSeconds each. Any manual layout choice ends it.
+    property bool touring: false
+    function startTour() {
+        if (Devices.count === 0) return;
+        touring = true;
+        maximizedIndex = maximizedIndex >= 0 ? maximizedIndex : 0;
+    }
+    function stopTour() {
+        if (!touring) return;
+        touring = false;
+        maximizedIndex = -1;
+    }
+    Timer {
+        interval: AppSettings.tourSeconds * 1000
+        repeat: true
+        running: page.touring && page.active && Devices.count > 0
+        onTriggered: page.maximizedIndex = (page.maximizedIndex + 1) % Devices.count
+    }
 
     // A maximized pane is effectively the single ("1") view, so light that button
     // up in the layout toolbar rather than the underlying grid preset.
@@ -96,7 +117,9 @@ Item {
         id: layoutStore
         category: "liveGrid"
         property string arrangement: ""
+        property int preset: 4       // 1/4/6/9/16 — kept across restarts
     }
+    onPresetChanged: if (layoutRestored) layoutStore.preset = preset
     property bool layoutRestored: false
 
     function saveLayout() {
@@ -115,6 +138,8 @@ Item {
     function restoreLayout() {
         if (layoutRestored || Devices.count === 0)
             return;
+        if ([1, 4, 6, 9, 16].indexOf(layoutStore.preset) >= 0)
+            preset = layoutStore.preset;
         layoutRestored = true;
         var saved = layoutStore.arrangement;
         if (saved.length > 0) {
@@ -183,7 +208,13 @@ Item {
         }
     }
 
-    Component.onCompleted: restoreLayout()
+    Component.onCompleted: {
+        restoreLayout();
+        if (typeof livePtzRow !== "undefined" && livePtzRow >= 0)
+            Qt.callLater(function () { maximizedIndex = livePtzRow; });
+        if (typeof liveAudioRow !== "undefined" && liveAudioRow >= 0)
+            audioIndex = liveAudioRow;
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -217,6 +248,7 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
+                            page.touring = false;
                             page.preset = parent.modelData;
                             page.maximizedIndex = -1;
                         }
@@ -233,6 +265,44 @@ Item {
                         }
                         background: Rectangle { color: Theme.surfaceAlt; border.color: Theme.border; radius: 4 }
                     }
+                }
+            }
+
+            // Tour toggle
+            Rectangle {
+                width: tourRow.implicitWidth + 16
+                height: 26
+                radius: Theme.radius
+                color: page.touring ? Theme.accentDim
+                     : tourArea.containsMouse ? Theme.surfaceAlt : Theme.surface
+                border.color: Theme.border
+                Row {
+                    id: tourRow
+                    anchors.centerIn: parent
+                    spacing: 5
+                    Text { text: "⟳"; color: page.touring ? Theme.text : Theme.textMuted; font.pixelSize: 13 }
+                    Text { text: qsTr("Tour"); color: page.touring ? Theme.text : Theme.textMuted
+                           font.pixelSize: 12 }
+                }
+                MouseArea {
+                    id: tourArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.touring ? page.stopTour() : page.startTour()
+                }
+                ToolTip {
+                    visible: tourArea.containsMouse
+                    delay: 500
+                    x: (parent.width - width) / 2
+                    y: parent.height + 6
+                    contentItem: Text {
+                        text: page.touring ? qsTr("Stop the tour")
+                                           : qsTr("Show each camera full size in turn (%1 s each)")
+                                                 .arg(AppSettings.tourSeconds)
+                        color: Theme.text; font.pixelSize: 11
+                    }
+                    background: Rectangle { color: Theme.surfaceAlt; border.color: Theme.border; radius: 4 }
                 }
             }
 
@@ -318,7 +388,8 @@ Item {
                     required property int rotationOverride
 
                     readonly property int slot: page.paneOfRow(index)
-                    readonly property bool isMaximized: page.maximizedIndex === index
+                    readonly property bool isMaximized: page.maximizedIndex >= 0
+                                                        && page.maximizedIndex === index
 
                     // A maximized pane shows even when its slot is beyond the grid
                     // preset (e.g. camera 5 clicked while in the 4-grid).
@@ -345,9 +416,12 @@ Item {
                     // idx is the device row: maximizedIndex/selectedIndex track
                     // cameras, not cells, so they survive a rearrange.
                     onToggleMaximize: (idx) => {
+                        page.touring = false; // a manual pick ends the tour
                         page.maximizedIndex = page.maximizedIndex === idx ? -1 : idx;
                     }
                     onClicked: (idx) => page.selectedIndex = idx
+                    audioOn: page.audioIndex === index
+                    onAudioToggled: (idx) => page.audioIndex = page.audioIndex === idx ? -1 : idx
                     onPopOut: (row, lbl) => page.popOut(row, lbl)
                     onCameraDropped: (targetPane, row) => page.assignPane(targetPane, row)
 

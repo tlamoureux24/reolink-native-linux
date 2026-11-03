@@ -33,11 +33,16 @@ TrayIcon::TrayIcon(QObject *parent) : QObject(parent)
     closeTray->setCheckable(true);
     closeTray->setChecked(m_closeToTray);
     connect(closeTray, &QAction::toggled, this, &TrayIcon::setCloseToTray);
+    // Keep the menu in step when the client settings page flips these.
+    connect(this, &TrayIcon::closeToTrayChanged, closeTray,
+            [this, closeTray] { closeTray->setChecked(m_closeToTray); });
 
     QAction *autostart = m_menu->addAction(tr("Start on login"));
     autostart->setCheckable(true);
     autostart->setChecked(startOnLogin());
     connect(autostart, &QAction::toggled, this, &TrayIcon::setStartOnLogin);
+    connect(this, &TrayIcon::startOnLoginChanged, autostart,
+            [this, autostart] { autostart->setChecked(startOnLogin()); });
 
     m_menu->addSeparator();
     QAction *quit = m_menu->addAction(tr("Quit"));
@@ -98,9 +103,12 @@ bool TrayIcon::startOnLogin() const
 
 void TrayIcon::setStartOnLogin(bool on)
 {
+    if (on == startOnLogin())
+        return;
     const QString path = autostartFile();
     if (!on) {
         QFile::remove(path);
+        emit startOnLoginChanged();
         return;
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
@@ -116,6 +124,8 @@ void TrayIcon::setStartOnLogin(bool on)
                            "X-KDE-autostart-after=panel\n")
                 .arg(launchCommand())
                 .toUtf8());
+    f.close();
+    emit startOnLoginChanged();
 }
 
 } // namespace rl

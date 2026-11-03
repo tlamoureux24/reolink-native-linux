@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libavformat-dev libavcodec-dev libavutil-dev \
-            libswscale-dev libcurl4-openssl-dev libsecret-1-dev libsqlite3-dev
+            libswscale-dev libsecret-1-dev libsqlite3-dev
       - name: Configure + build
         run: |
           cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
@@ -63,7 +63,7 @@ jobs:
           pacman -Syu --noconfirm --needed \
             base-devel cmake git ninja \
             qt6-base qt6-declarative qt6-multimedia qt6-shadertools qt6-tools \
-            ffmpeg curl libsecret sqlite
+            ffmpeg libsecret sqlite
       - uses: actions/checkout@v4
       - name: Report the versions under test
         run: |

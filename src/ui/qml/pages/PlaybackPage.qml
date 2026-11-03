@@ -16,13 +16,32 @@ Item {
     property int selYear: 2026
     property int selMonth: 7
     property int selDay: 9
+    // Month shown in the calendar — follows the selected date, but the arrows
+    // can browse other months without changing the selection.
+    property int calYear: selYear
+    property int calMonth: selMonth
+    onSelYearChanged: calYear = selYear
+    onSelMonthChanged: calMonth = selMonth
+    // In grid mode the calendar follows the first pane's camera.
+    function calendarRow() { return page.paneCount === 4 ? page.gridRows[0] : page.deviceRow; }
+    function showMonth(y, m) {
+        page.calYear = y;
+        page.calMonth = m;
+        page.recordingDays = [];
+        var row = page.calendarRow();
+        if (row !== undefined && row >= 0)
+            Devices.searchRecordingDays(row, y, m);
+    }
 
-    // Default the date to today.
+    // Default the date to today (test hook: RL_PLAYBACK_DATE=YYYY-MM-DD).
     Component.onCompleted: {
-        var now = new Date();
+        var now = (typeof playbackDate !== "undefined" && playbackDate)
+                ? new Date(playbackDate + "T00:00:00") : new Date();
         selYear = now.getFullYear();
         selMonth = now.getMonth() + 1;
         selDay = now.getDate();
+        // The camera combo may already have searched with the placeholder date.
+        page.refresh();
     }
 
     property var recordingDays: []
@@ -34,9 +53,38 @@ Item {
         camRotation = i && i.rotationOverride ? i.rotationOverride : 0;
     }
     property bool _autoplayed: false // test hook guard
-    // HD mode streams the full-resolution main stream over native Baichuan; off =
-    // light sub-stream (FLV) scrubbing.
+    // HD mode plays the full-resolution main stream; off = the light sub stream
+    // (quick scrubbing). Both inside the device's Baichuan session.
     property bool hdMode: false
+    // Transport shared by the single pane and every grid pane. Pause keeps the
+    // streams open so "next frame" can step.
+    // A message kept on screen must follow a live language switch: remember
+    // how to build it and rebuild it when the language changes.
+    property var _statusFn: null
+    function setStatus(fn) {
+        _statusFn = fn;
+        page.statusMessage = fn ? fn() : "";
+    }
+    Connections {
+        target: AppSettings
+        function onLanguageChanged() { if (page._statusFn) page.statusMessage = page._statusFn(); }
+    }
+    property string statusMessage: ""
+
+    property real rate: 1.0
+    property bool paused: false
+    property bool soundOn: false     // single pane only; silent unless 1x and playing
+    readonly property bool canPause: true
+    function stepFrame() {
+        if (page.paneCount === 4) {
+            for (var i = 0; i < paneRepeater.count; i++) {
+                var p = gridPane(i);
+                if (p && p.streaming) p.stepFrame();
+            }
+        } else {
+            player.stepFrame();
+        }
+    }
 
     // ---- Synced multi-camera playback ---------------------------------------
     // Like the official client: up to 4 panes, one calendar and one timeline
@@ -81,6 +129,22 @@ Item {
     // The union track lets you scrub to anything any pane has; each lane shows
     // who actually has footage where. Overlapping segments simply overdraw on
     // the union track, so no interval merging is needed.
+    // Timeline filter (official client: icons beside the calendar). A mask of
+    // trigger flags from Devices' segments (1 timer, 2 motion, 4 person,
+    // 8 vehicle, 16 animal); 0 shows everything. It filters what the timeline
+    // shows, not what plays — footage between matches still plays through.
+    property int triggerFilter: 0
+    property var daySegments: []   // single-pane: the day's unfiltered segments
+    function filtered(segs) {
+        if (page.triggerFilter === 0) return segs;
+        return segs.filter(function (s) { return ((s.triggers || 0) & page.triggerFilter) !== 0; });
+    }
+    function applyFilter() {
+        if (page.paneCount === 4) recomputeGrid();
+        else timeline.segments = filtered(page.daySegments);
+    }
+    onTriggerFilterChanged: applyFilter()
+
     function recomputeGrid() {
         var lanes = [];
         var union = [];
@@ -88,7 +152,7 @@ Item {
             var r = page.gridRows[i];
             if (r === undefined || r < 0)
                 continue;
-            var segs = page.gridSegs[r] || [];
+            var segs = filtered(page.gridSegs[r] || []);
             var info = Devices.cameraInfo(r);
             lanes.push({ name: info && info.name ? info.name : qsTr("Camera %1").arg(i + 1),
                          segments: segs });
@@ -96,7 +160,7 @@ Item {
         }
         timeline.lanes = lanes;
         timeline.segments = union;
-        statusText.text = qsTr("Synced playback — %n camera(s)", "", lanes.length);
+        page.setStatus(function () { return qsTr("Synced playback — %n camera(s)", "", lanes.length); });
     }
 
     function saveGridLayout() {
@@ -222,21 +286,22 @@ Item {
             page.paneCount = 1;
             timeline.lanes = [];
             timeline.segments = [];
+            page.daySegments = [];
             page.refresh();
         }
     }
 
     // False when the Playback page isn't on screen — stop streaming so a Baichuan
-    // session (or FLV stream) isn't left running on the connection-limited NVR.
+    // playback isn't left running in the device's session.
     property bool active: true
     onActiveChanged: if (!active) { _suppressResume = true; player.stop(); stopAllPanes(); }
 
     // Advance the playhead in realtime while streaming, so the timeline cursor
     // tracks the current position (and play/pause resumes from where you are).
     Timer {
-        interval: 1000; repeat: true
-        running: player.state === StreamPlayer.Streaming || page.streamingPanes > 0
-        onTriggered: if (page.playheadSecs < 86399) page.playheadSecs += 1
+        interval: 250; repeat: true
+        running: (player.state === StreamPlayer.Streaming || page.streamingPanes > 0) && !page.paused
+        onTriggered: page.playheadSecs = Math.min(86399, page.playheadSecs + page.rate / 4)
     }
 
     function refresh() {
@@ -269,10 +334,8 @@ Item {
         }
         return false;
     }
-    // The NVR's FLV endpoint streams ONE recording file per connection, and
-    // motion events are stored as separate files — so continuous footage ends
-    // in an EOF exactly at each event boundary, killing playback right at the
-    // red marker. When the stream ends but footage continues past the playhead,
+    // Playback goes from file to file by itself; should it still end while
+    // footage continues past the playhead (a file the device would not send),
     // reopen at the next second instead of giving up.
     property real _lastAutoResume: -10
     property bool _suppressResume: false   // a user Stop must stay stopped
@@ -305,6 +368,7 @@ Item {
     // Move the playhead and, if a recording covers that moment, play from it.
     function playAt(sec) {
         page._suppressResume = false;
+        page.paused = false; // a seek or (re)start always plays
         page.playheadSecs = sec;
         if (page.paneCount === 4) {
             // One commit fans out to every placed pane at the same wall-clock
@@ -320,36 +384,27 @@ Item {
             player.stop();
             return;
         }
-        if (page.hdMode) {
-            page.playHd(sec);
-            return;
-        }
-        // Scrub against the sub stream: it is light and always landscape, so the
-        // timeline stays responsive. (HD mode below plays the full-res main.)
-        player.loop = false;
-        var url = Devices.playbackUrl(page.deviceRow, epochAt(sec), false);
-        if (url.length > 0) {
-            player.expectedSize = Devices.declaredSize(page.deviceRow, false); // sub
-            player.source = url;
-            player.start();
-        }
+        page.playStream(epochAt(sec));
     }
 
-    // HD: stream the full-resolution main stream over native Baichuan (TCP 9000)
-    // from this exact moment — realtime and frame-accurate, the way the official
-    // apps do it (HTTP-FLV can't carry the HEVC main stream, cmd=Download is slow).
-    function playHd(sec) {
+    // Play the recordings from this moment inside the device's Baichuan session,
+    // file by file as the official client does: the sub stream (light, quick to
+    // scrub) or, in HD mode, the full-resolution main stream.
+    function playStream(epoch) {
         if (page.deviceRow < 0)
             return;
-        statusText.text = qsTr("HD");
-        // Seek the running session in place (no reconnect) when possible; else open
-        // a fresh Baichuan session.
-        if (player.state === StreamPlayer.Streaming
-            && Devices.seekBaichuanPlayback(page.deviceRow, epochAt(sec)))
+        if (page.hdMode)
+            page.setStatus(function () { return qsTr("HD"); });
+        // Seek the running playback in place when it is of the wanted quality;
+        // else start one (an SD/HD switch needs the other stream).
+        if (player.state === StreamPlayer.Streaming && page._playingHd === page.hdMode
+            && Devices.seekBaichuanPlayback(page.deviceRow, epoch))
             return;
         player.loop = false;
-        Devices.startBaichuanPlayback(page.deviceRow, epochAt(sec), player, true);
+        page._playingHd = page.hdMode;
+        Devices.startBaichuanPlayback(page.deviceRow, epoch, player, page.hdMode);
     }
+    property bool _playingHd: false // quality of the running playback
 
     property real _pendingPlayEpoch: 0  // play this once the day's search returns
     property real _pendingPlaySecs: -1  // resume here after a camera switch
@@ -363,7 +418,7 @@ Item {
         var epoch = new Date(page.selYear, page.selMonth - 1, page.selDay).getTime() / 1000
                     + Math.floor(page.playheadSecs);
         exportBtn.busy = true;
-        statusText.text = qsTr("Exporting clip…");
+        page.setStatus(function () { return qsTr("Exporting clip…"); });
         Devices.exportClip(page.deviceRow, epoch, secs);
     }
 
@@ -394,12 +449,12 @@ Item {
         function onClipExported(row, path) {
             if (row !== page.deviceRow) return;
             exportBtn.busy = false;
-            statusText.text = qsTr("Clip saved: %1").arg(path);
+            page.setStatus(function () { return qsTr("Clip saved: %1").arg(path); });
         }
         function onClipExportFailed(row, error) {
             if (row !== page.deviceRow) return;
             exportBtn.busy = false;
-            statusText.text = qsTr("Export failed: %1").arg(error);
+            page.setStatus(function () { return qsTr("Export failed: %1").arg(error); });
         }
         function onRecordingsFound(row, segments) {
             if (page.paneCount === 4) {
@@ -412,11 +467,18 @@ Item {
                 // If this camera just joined mid-playback, start it (alone) at
                 // the watched moment — the other panes never stopped.
                 page.resumePaneIfPending(row);
+                // Test hook: play the grid once from this camera's first recording.
+                if (typeof playbackAutoplay !== "undefined" && playbackAutoplay
+                    && segments.length > 0 && !page._autoplayed) {
+                    page._autoplayed = true;
+                    page.playAt(segments[0].start);
+                }
                 return;
             }
             if (row === page.deviceRow) {
-                timeline.segments = segments;
-                statusText.text = segments.length + qsTr(" recordings");
+                page.daySegments = segments;
+                timeline.segments = page.filtered(segments);
+                page.setStatus(function () { return segments.length + qsTr(" recordings"); });
                 // Overlay this day's detection events as timeline markers.
                 var info = Devices.cameraInfo(page.deviceRow);
                 if (info && info.hostId !== undefined) {
@@ -429,12 +491,7 @@ Item {
                     page._pendingPlayEpoch = 0;
                     page._pendingPlaySecs = -1;
                     page._suppressResume = false; // event playback crosses file boundaries too
-                    var url = Devices.playbackUrl(page.deviceRow, ep, false); // sub stream
-                    if (url.length > 0) {
-                        player.expectedSize = Devices.declaredSize(page.deviceRow, false);
-                        player.source = url;
-                        player.start();
-                    }
+                    page.playStream(ep);
                 } else if (page._pendingPlaySecs >= 0) {
                     // Camera switch: resume at the same playhead moment (playAt
                     // respects SD/HD mode and stops if no recording covers it).
@@ -452,8 +509,7 @@ Item {
         }
         function onRecordingDaysFound(row, year, month, days) {
             // In grid mode the calendar follows the first pane's camera.
-            var calRow = page.paneCount === 4 ? page.gridRows[0] : page.deviceRow;
-            if (row === calRow && year === page.selYear && month === page.selMonth)
+            if (row === page.calendarRow() && year === page.calYear && month === page.calMonth)
                 page.recordingDays = days;
         }
         function onRecordingsFailed(row, error) {
@@ -466,12 +522,13 @@ Item {
                 s[row] = [];
                 page.gridSegs = s;
                 page.recomputeGrid();
-                statusText.text = error;
+                page.setStatus(function () { return error; });
                 return;
             }
             if (row === page.deviceRow) {
                 timeline.segments = [];
-                statusText.text = error;
+                page.daySegments = [];
+                page.setStatus(function () { return error; });
             }
         }
         // Re-fetch once the selected device finishes connecting (its client
@@ -499,8 +556,12 @@ Item {
         function onRowsRemoved() {
             if (page.paneCount === 4) { page.gridSegs = ({}); page.initGridRows(); page.refresh(); }
         }
+        // A device's rows are also re-inserted once it finishes signing in, so
+        // the single-pane camera needs this too: its first search ran before
+        // that and failed with "device not ready", leaving the day blank.
         function onRowsInserted() {
             if (page.paneCount === 4) { page.gridSegs = ({}); page.initGridRows(); page.refresh(); }
+            else if (page.deviceRow >= 0 && timeline.segments.length === 0) page.refresh();
         }
     }
 
@@ -571,7 +632,7 @@ Item {
                 Item { Layout.fillWidth: true }
                 Text {
                     id: statusText
-                    text: qsTr("Select a date")
+                    text: page.statusMessage !== "" ? page.statusMessage : qsTr("Select a date")
                     color: Theme.textMuted
                     font.pixelSize: 12
                 }
@@ -685,7 +746,12 @@ Item {
 
                 // Retry on connection error: NVRs are connection-limited and may
                 // momentarily refuse the playback stream.
-                StreamPlayer { id: player; videoSink: video.videoSink; retryOnError: true }
+                StreamPlayer {
+                    id: player; videoSink: video.videoSink; retryOnError: true
+                    playbackRate: page.rate
+                    paused: page.paused && page.canPause
+                    audioEnabled: page.soundOn
+                }
 
                 Column {
                     anchors.centerIn: parent
@@ -763,6 +829,8 @@ Item {
                         viewRotation: rotationOverride
                         segments: page.gridSegs[index] || []
                         playheadSecs: page.playheadSecs
+                        rate: page.rate
+                        paused: page.paused
                         // HD only while maximized; restoring forces SD (the pane
                         // handles the switch-back itself when this goes false).
                         showHdToggle: isMax
@@ -796,7 +864,7 @@ Item {
                         { start: 61200, end: 79200, type: "timer", name: "e" }
                     ];
                     page.playheadSecs = 32400;
-                    statusText.text = "5 recordings (mock)";
+                    page.setStatus(function () { return "5 recordings (mock)"; });
                 }
             }
 
@@ -834,23 +902,48 @@ Item {
                 // (a StreamPlayer session is one-shot, so "play" re-opens the stream).
                 // In grid mode the one control drives every pane.
                 Ctl {
-                    readonly property bool playing: page.paneCount === 4
+                    readonly property bool streaming: page.paneCount === 4
                         ? page.streamingPanes > 0
                         : player.state === StreamPlayer.Streaming
+                    readonly property bool playing: streaming && !page.paused
                     glyph: playing ? "⏸" : "▶"
                     tip: playing ? qsTr("Pause") : qsTr("Play")
                     onActivated: {
-                        if (playing) {
+                        if (playing && page.canPause) {
+                            page.paused = true;
+                        } else if (playing) {
                             page._suppressResume = true;
-                            if (page.paneCount === 4) page.stopAllPanes();
-                            else player.stop();
+                            player.stop();
+                        } else if (streaming) {
+                            page.paused = false;
                         } else {
                             page.playAt(page.playheadSecs);
                         }
                     }
                 }
+                Ctl { glyph: page.soundOn ? "🔊" : "🔇"
+                      visible: page.paneCount === 1 && player.hasAudio
+                      tip: page.soundOn ? qsTr("Mute") : qsTr("Sound (1× only)")
+                      onActivated: page.soundOn = !page.soundOn }
+                Ctl { glyph: "⏭"; tip: qsTr("Next frame")
+                      visible: page.paused
+                      onActivated: page.stepFrame() }
+                Ctl {
+                    width: 46
+                    glyph: (page.rate < 1 ? "½" : page.rate) + "×"
+                    tip: qsTr("Playback speed")
+                    onActivated: speedMenu.popup()
+                    ThemedMenu {
+                        id: speedMenu
+                        ThemedMenuItem { text: "0.5×"; onTriggered: page.rate = 0.5 }
+                        ThemedMenuItem { text: "1×"; onTriggered: page.rate = 1 }
+                        ThemedMenuItem { text: "2×"; onTriggered: page.rate = 2 }
+                        ThemedMenuItem { text: "4×"; onTriggered: page.rate = 4 }
+                        ThemedMenuItem { text: "8×"; onTriggered: page.rate = 8 }
+                    }
+                }
                 Ctl { glyph: "⏹"; tip: qsTr("Stop")
-                      onActivated: { page._suppressResume = true;
+                      onActivated: { page._suppressResume = true; page.paused = false;
                                      player.stop(); page.stopAllPanes(); } }
                 // Export: save a main-stream MP4 of the moment at the playhead.
                 // Single-pane only — it targets THE camera, and grid mode has four.
@@ -885,8 +978,8 @@ Item {
                     }
                 }
                 Item { Layout.fillWidth: true }
-                // Quality toggle: SD = light sub-stream (FLV) scrubbing; HD = full-res
-                // main stream over native Baichuan. Grid mode is forced to the sub
+                // Quality toggle: SD = light sub-stream scrubbing; HD = full-res
+                // main stream. Grid mode is forced to the sub
                 // stream (as in the official client): the device budget allows only
                 // 2 concurrent main streams, and a 4-pane grid would blow past it.
                 Rectangle {
@@ -935,20 +1028,60 @@ Item {
             radius: Theme.radius
 
             MonthCalendar {
+                id: calendar
                 anchors.top: parent.top
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.topMargin: Theme.spacing
-                year: page.selYear
-                month: page.selMonth
+                year: page.calYear
+                month: page.calMonth
+                selYear: page.selYear
+                selMonth: page.selMonth
                 selDay: page.selDay
                 markedDays: page.recordingDays
+                onMonthNavigated: (y, m) => page.showMonth(y, m)
                 onDateSelected: (y, m, d) => {
+                    // Dots belong to the old month until the new search answers.
+                    if (y !== page.selYear || m !== page.selMonth)
+                        page.recordingDays = [];
                     page.selYear = y; page.selMonth = m; page.selDay = d;
                     // Cached per-camera days are for the OLD date; a stale entry
                     // would make assignGridPane skip the search for a camera
                     // re-entering the grid and play the wrong day.
                     page.gridSegs = ({});
                     page.refresh();
+                }
+            }
+
+            // ---- Detection filter ----
+            Column {
+                anchors.top: calendar.bottom
+                anchors.topMargin: Theme.spacing * 2
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: Theme.spacing
+                spacing: 6
+                Text { text: qsTr("Show on timeline"); color: Theme.textMuted; font.pixelSize: 11 }
+                Flow {
+                    width: parent.width
+                    spacing: 4
+                    Repeater {
+                        model: [{ mask: 0, label: qsTr("All") },
+                                { mask: 4, label: qsTr("People") },
+                                { mask: 8, label: qsTr("Vehicles") },
+                                { mask: 16, label: qsTr("Animals") },
+                                { mask: 2, label: qsTr("Motion") }]
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: page.triggerFilter === modelData.mask
+                            width: chipTxt.implicitWidth + 16; height: 24; radius: 12
+                            color: on ? Theme.accentDim : chipHover.hovered ? Theme.surfaceAlt : "transparent"
+                            border.color: on ? Theme.accent : Theme.border
+                            Text { id: chipTxt; anchors.centerIn: parent; text: parent.modelData.label
+                                   color: Theme.text; font.pixelSize: 11 }
+                            HoverHandler { id: chipHover }
+                            TapHandler { onTapped: page.triggerFilter = parent.modelData.mask }
+                        }
+                    }
                 }
             }
         }

@@ -47,6 +47,8 @@ public:
     // (dayStart = local midnight epoch). Feeds the playback timeline's markers.
     Q_INVOKABLE QVariantList eventTimesFor(qint64 hostId, int channel, qint64 dayStart) const;
     Q_INVOKABLE void clear();
+    // Re-render texts after a language switch.
+    void refreshTexts();
 
 signals:
     void countChanged();

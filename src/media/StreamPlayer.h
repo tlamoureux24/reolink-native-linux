@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAudioSink>
 #include <QMutex>
 #include <QObject>
 #include <QPointer>
@@ -13,6 +14,8 @@
 #include <thread>
 
 namespace rl {
+
+struct PacketAudio;
 
 // One live/playback stream: FFmpeg demux + decode on a dedicated worker thread,
 // frames delivered to a QML VideoOutput's QVideoSink (NV12/YUV420P upload path —
@@ -41,6 +44,17 @@ class StreamPlayer : public QObject
     Q_PROPERTY(bool loop READ loop WRITE setLoop NOTIFY loopChanged)
     Q_PROPERTY(bool retryOnError READ retryOnError WRITE setRetryOnError NOTIFY retryOnErrorChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY recordingChanged)
+    // File/playback sources only (live sources are paced by the network): speed
+    // factor applied to the pacing clock, and a pause that keeps the connection
+    // open so stepFrame() can advance one frame at a time.
+    Q_PROPERTY(double playbackRate READ playbackRate WRITE setPlaybackRate NOTIFY playbackRateChanged)
+    Q_PROPERTY(bool paused READ paused WRITE setPaused NOTIFY pausedChanged)
+    // Audio is decoded only while enabled (one pane at a time is the intent),
+    // and is silent while paused or at any speed other than 1x.
+    Q_PROPERTY(bool audioEnabled READ audioEnabled WRITE setAudioEnabled NOTIFY audioEnabledChanged)
+    Q_PROPERTY(double volume READ volume WRITE setVolume NOTIFY volumeChanged)
+    // True once the current stream turned out to carry decodable audio.
+    Q_PROPERTY(bool hasAudio READ hasAudio NOTIFY hasAudioChanged)
 
 public:
     enum class State { Idle, Connecting, Streaming, Error, Stopped };
@@ -51,6 +65,10 @@ public:
         std::atomic<bool> abort{false};
         std::atomic<bool> loop{false};
         std::atomic<qint64> framesDecoded{0};
+        std::atomic<double> rate{1.0};
+        std::atomic<bool> paused{false};
+        std::atomic<int> steps{0}; // frames to release while paused
+        std::atomic<bool> audioEnabled{false};
         QString source;
         QSize expectedSize; // declared size for rotation detection (see property)
 
@@ -59,6 +77,7 @@ public:
         // forcedFormat is the libavformat demuxer name ("h264"/"hevc").
         std::function<int(unsigned char *, int)> readPacket;
         QString forcedFormat;
+        bool packetPausable = false;
 
         // Retry on connection error even for non-live sources (playback FLV on a
         // connection-limited NVR often needs a couple of attempts).
@@ -95,8 +114,15 @@ public:
     // to end); `format` is the demuxer ("h264"/"hevc"); `onStop` is invoked on
     // stop()/destruction to unblock and tear down the source. Set before start();
     // cleared by setSource(). Not a QML API.
+    // `pausable`: a recording the reader paces itself — paused/stepFrame hold
+    // and release frames as for a file (a live source is never held).
     void setPacketSource(std::function<int(unsigned char *, int)> reader, const QString &format,
-                         std::function<void()> onStop);
+                         std::function<void()> onStop, bool pausable = false);
+    // The packet source's audio: the returned function takes its audio frames
+    // (AAC, or a Reolink IMA-ADPCM block) on any thread and plays them the way a
+    // URL stream's audio plays (hasAudio, audioEnabled, volume). Get it before
+    // the source starts; each call replaces the previous one. Not a QML API.
+    std::function<void(const QByteArray &frame, bool aac)> packetAudioInput();
 
     QVideoSink *videoSink() const;
     void setVideoSink(QVideoSink *sink);
@@ -110,6 +136,23 @@ public:
 
     bool retryOnError() const { return m_retryOnError; }
     void setRetryOnError(bool v);
+
+    double playbackRate() const { return m_rate; }
+    void setPlaybackRate(double rate);
+    bool paused() const { return m_paused; }
+    void setPaused(bool paused);
+    // While paused, decode and show exactly one more frame.
+    Q_INVOKABLE void stepFrame();
+
+    bool audioEnabled() const { return m_audioEnabled; }
+    void setAudioEnabled(bool enabled);
+    double volume() const { return m_volume; }
+    void setVolume(double volume);
+    bool hasAudio() const { return m_hasAudio; }
+    // GUI thread, from the worker: 48 kHz stereo S16 PCM to play, or the
+    // stream's audio availability. Not part of the QML API.
+    void pushAudio(const QByteArray &pcm);
+    void setHasAudioFromWorker(bool has);
 
     Q_INVOKABLE void start();
     Q_INVOKABLE void stop();
@@ -134,6 +177,11 @@ signals:
     void framesDecodedChanged();
     void loopChanged();
     void retryOnErrorChanged();
+    void playbackRateChanged();
+    void pausedChanged();
+    void audioEnabledChanged();
+    void volumeChanged();
+    void hasAudioChanged();
     void recordingChanged();
     void recordingSaved(const QString &path);
     void recordingFailed(const QString &error);
@@ -145,9 +193,20 @@ private:
     QSize m_expectedSize;
     std::function<int(unsigned char *, int)> m_pendingReader;
     QString m_pendingFormat;
+    bool m_pendingPausable = false;
     std::function<void()> m_pendingStop; // teardown for the not-yet-started source
     std::function<void()> m_activeStop;  // teardown for the running session's source
     bool m_loop = false;
+    double m_rate = 1.0;
+    bool m_paused = false;
+    bool m_audioEnabled = false;
+    double m_volume = 1.0;
+    bool m_hasAudio = false;
+    QAudioSink *m_audioSink = nullptr;
+    QIODevice *m_audioIo = nullptr;
+    void closeAudio();
+    std::shared_ptr<PacketAudio> m_packetAudio; // see packetAudioInput()
+    void detachPacketAudio();
 
     State m_state = State::Idle;
     QString m_errorString;

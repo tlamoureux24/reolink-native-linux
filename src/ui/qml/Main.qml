@@ -29,11 +29,15 @@ ApplicationWindow {
         }
     }
     // Closing hides to the tray when enabled — monitoring and notifications
-    // keep running; Quit lives in the tray menu.
+    // keep running; Quit lives in the tray menu. With "keep running" off, the
+    // close button quits for real: with a tray the app otherwise never exits on
+    // its last window (setQuitOnLastWindowClosed(false)) and lingers as an icon.
     onClosing: (close) => {
         if (Tray.available && Tray.closeToTray) {
             close.accepted = false;
             window.hide();
+        } else if (Tray.available) {
+            Tray.quit();
         }
     }
 
@@ -61,6 +65,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             visible: !window.videoFullscreen
             onFullscreenRequested: window.videoFullscreen = true
+            onSettingsRequested: clientSettings.open()
         }
 
         Rectangle { // divider
@@ -283,8 +288,8 @@ ApplicationWindow {
         propsDialog.subheading = host.kind === "nvr" ? qsTr("Reolink NVR") : qsTr("Camera");
         propsDialog.rows = [
             { label: qsTr("Model"), value: host.model || "—" },
-            { label: qsTr("Address"),
-              value: host.addr + ":" + host.port + (host.https ? qsTr(" (HTTPS)") : "") },
+            { label: qsTr("Address"), value: host.addr },
+            { label: qsTr("UID"), value: host.uid || "—" },
             { label: qsTr("Account"), value: host.username + (host.isAdmin ? qsTr(" · admin") : "") },
             { label: qsTr("Cameras"),
               value: host.onlineCount + " / " + host.channelCount + qsTr(" online") }
@@ -342,6 +347,9 @@ ApplicationWindow {
         target: Devices
         function onSnapshotSaved(row, path) { toast.show(qsTr("Snapshot saved"), false); }
         function onSnapshotFailed(row, error) { toast.show(qsTr("Snapshot failed: %1").arg(error), true); }
+        function onTalkStateChanged(row, active, error) {
+            if (error !== "") toast.show(qsTr("Talk: %1").arg(error), true);
+        }
         function onSettingApplied(row, command, ok, error) {
             if (command === "AudioAlarmPlay")
                 toast.show(ok ? qsTr("Siren triggered") : qsTr("Siren failed: %1").arg(error), !ok);
@@ -350,5 +358,12 @@ ApplicationWindow {
             else if (!ok)
                 toast.show(qsTr("%1 failed: %2").arg(command).arg(error), true);
         }
+    }
+
+    ClientSettingsDialog {
+        id: clientSettings
+        parent: Overlay.overlay
+        Component.onCompleted: if (typeof openClientSettings !== "undefined" && openClientSettings)
+                                   Qt.callLater(open)
     }
 }

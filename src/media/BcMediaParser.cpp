@@ -94,7 +94,13 @@ int BcMediaParser::append(const QByteArray &mediaBytes)
             const int total = 8 + static_cast<int>(size) + padFor(size);
             if (m_buf.size() < total)
                 break;
-            m_buf.remove(0, total); // audio skipped in the video path
+            if (onAudio) {
+                AudioFrame a;
+                a.aac = (b[1] == '5');
+                a.data = m_buf.mid(8, static_cast<int>(size));
+                onAudio(a);
+            }
+            m_buf.remove(0, total);
             continue;
         }
 

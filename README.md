@@ -50,7 +50,7 @@ cmake --build build -j$(nproc)
 ./build/reolink-client
 ```
 
-Requires Qt 6.5+ (base / declarative / multimedia / shadertools / tools), FFmpeg dev headers, libcurl, libsecret, and sqlite. Run the tests with `ctest --test-dir build`.
+Requires Qt 6.5+ (base / declarative / multimedia / shadertools / tools), FFmpeg dev headers, libsecret, and sqlite. Run the tests with `ctest --test-dir build`.
 
 ## Features
 

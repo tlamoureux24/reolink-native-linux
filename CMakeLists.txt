@@ -15,8 +15,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-    libavformat libavcodec libavutil libswscale)
-pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+    libavformat libavcodec libavutil libswscale libswresample)
 pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 
 # ---------------------------------------------------------------------------
@@ -25,6 +24,7 @@ pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 add_library(reolink_core STATIC
     src/core/Log.h src/core/Log.cpp
     src/core/Paths.h src/core/Paths.cpp
+    src/core/AppSettings.h src/core/AppSettings.cpp
     src/core/Database.h src/core/Database.cpp
     src/core/CredentialStore.h src/core/CredentialStore.cpp
     src/core/Notifier.h src/core/Notifier.cpp
@@ -32,8 +32,15 @@ add_library(reolink_core STATIC
     src/core/SingleInstance.h src/core/SingleInstance.cpp
     src/protocol/Json.h
     src/protocol/ReolinkApi.h src/protocol/ReolinkApi.cpp
-    src/protocol/ReolinkHttpClient.h src/protocol/ReolinkHttpClient.cpp
     src/protocol/BcCrypto.h src/protocol/BcCrypto.cpp
+    src/protocol/BcLink.h src/protocol/BcLink.cpp
+    src/protocol/BcUdp.h src/protocol/BcUdp.cpp
+    src/protocol/BcUdpLink.h src/protocol/BcUdpLink.cpp
+    src/protocol/BcSession.h src/protocol/BcSession.cpp
+    src/protocol/BcXml.h src/protocol/BcXml.cpp
+    src/protocol/BcDevice.h src/protocol/BcDevice.cpp
+    src/protocol/BcSettings.h src/protocol/BcSettings.cpp
+    src/protocol/BcRecordings.h src/protocol/BcRecordings.cpp
     src/protocol/BaichuanClient.h src/protocol/BaichuanClient.cpp
     src/protocol/BaichuanControl.h src/protocol/BaichuanControl.cpp
     src/device/DeviceManager.h src/device/DeviceManager.cpp
@@ -41,11 +48,14 @@ add_library(reolink_core STATIC
     src/device/EventManager.h src/device/EventManager.cpp
     src/media/StreamPlayer.h src/media/StreamPlayer.cpp
     src/media/BcMediaParser.h src/media/BcMediaParser.cpp
+    src/media/BcClipWriter.h src/media/BcClipWriter.cpp
+    src/media/ImaAdpcm.h src/media/ImaAdpcm.cpp
+    src/media/TalkSession.h src/media/TalkSession.cpp
 )
 target_include_directories(reolink_core PUBLIC src third_party)
 target_link_libraries(reolink_core PUBLIC
     Qt6::Core Qt6::Gui Qt6::Sql Qt6::Multimedia Qt6::Concurrent Qt6::Network Qt6::DBus
-    PkgConfig::FFMPEG PkgConfig::CURL PkgConfig::SECRET)
+    PkgConfig::FFMPEG PkgConfig::SECRET)
 
 # ---------------------------------------------------------------------------
 # Application
@@ -63,6 +73,10 @@ set(APP_QML_FILES
     src/ui/qml/components/LivePane.qml
     src/ui/qml/components/PlaybackPane.qml
     src/ui/qml/components/PtzPad.qml
+    src/ui/qml/components/PtzPanel.qml
+    src/ui/qml/components/ThemedCheckBox.qml
+    src/ui/qml/components/ThemedComboBox.qml
+    src/ui/qml/components/ThemedSpinBox.qml
     src/ui/qml/components/Timeline.qml
     src/ui/qml/components/MonthCalendar.qml
     src/ui/qml/components/SettingRow.qml
@@ -75,10 +89,12 @@ set(APP_QML_FILES
     src/ui/qml/pages/EventsPage.qml
     src/ui/qml/pages/DeviceSettingsPage.qml
     src/ui/qml/dialogs/AddDeviceDialog.qml
+    src/ui/qml/dialogs/ClientSettingsDialog.qml
     src/ui/qml/dialogs/PropertiesDialog.qml
     src/ui/qml/dialogs/UserEditDialog.qml
     src/ui/qml/dialogs/ConfirmDialog.qml
     src/ui/qml/dialogs/DetectionZoneDialog.qml
+    src/ui/qml/dialogs/PrivacyMaskDialog.qml
     src/ui/qml/dialogs/ScheduleDialog.qml
 )
 # Strip the src/ui/qml/ prefix so module paths are clean (Main.qml, pages/..., etc.)
@@ -121,7 +137,7 @@ qt_add_resources(reolink-client "app_icons"
 target_link_libraries(reolink-client PRIVATE reolink_core Qt6::QuickControls2 Qt6::Widgets)
 
 qt_add_translations(reolink-client
-    TS_FILES i18n/reolink-client_en.ts i18n/reolink-client_es.ts
+    TS_FILES i18n/reolink-client_en.ts i18n/reolink-client_es.ts i18n/reolink-client_fr.ts
     LUPDATE_OPTIONS -no-obsolete)
 
 install(TARGETS reolink-client RUNTIME DESTINATION bin)
@@ -139,11 +155,16 @@ foreach(sz 16 24 32 48 64 128 256 512)
             RENAME io.github.todesengelx.ReolinkLinux.png)
 endforeach()
 
+# Diagnostic: talk to one device over Baichuan from the command line, without
+# the GUI. Not installed.
+qt_add_executable(bc-probe tools/bc-probe.cpp)
+target_link_libraries(bc-probe PRIVATE reolink_core)
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 enable_testing()
-foreach(t IN ITEMS test_protocol test_database test_singleinstance test_tls)
+foreach(t IN ITEMS test_protocol test_database test_singleinstance test_tls test_playback_pacing test_p2p)
     qt_add_executable(${t} tests/${t}.cpp)
     target_link_libraries(${t} PRIVATE reolink_core Qt6::Test)
     add_test(NAME ${t} COMMAND ${t})
