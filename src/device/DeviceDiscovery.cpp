@@ -1,9 +1,9 @@
 #include "DeviceDiscovery.h"
 
 #include "core/Log.h"
+#include "protocol/BcLink.h"
 
 #include <QNetworkInterface>
-#include <QTcpSocket>
 #include <QtConcurrent/QtConcurrent>
 
 
@@ -15,28 +15,10 @@ constexpr int kPortConnectMs = 500; // per-host TCP connect timeout to :9000
 constexpr int kReolinkPort = 9000;  // Baichuan — a strong Reolink signature
 
 // Confirm the host really speaks Baichuan, as the official client finds a
-// device: the legacy hello (cmd 1, class 0x6514) asks for a login nonce, and a
-// Reolink device answers with a message carrying the Baichuan magic.
+// device (its hello is answered with the Baichuan magic).
 bool confirmReolink(const QString &ip)
 {
-    QTcpSocket sock;
-    sock.connectToHost(ip, static_cast<quint16>(kReolinkPort));
-    if (!sock.waitForConnected(kPortConnectMs))
-        return false;
-    QByteArray hello;
-    const quint32 magic = 0x0ABCDEF0;
-    const quint32 cmd = 1;
-    hello.append(reinterpret_cast<const char *>(&magic), 4); // little-endian hosts
-    hello.append(reinterpret_cast<const char *>(&cmd), 4);
-    hello.append(QByteArray(4, '\0'));                     // no payload
-    hello.append(QByteArray(4, '\0'));                     // channel 0, message id 0
-    hello.append("\x12\xdc\x14\x65", 4);                   // status 0xdc12, class 0x6514
-    sock.write(hello);
-    sock.flush();
-    QByteArray reply;
-    while (reply.size() < 4 && sock.waitForReadyRead(1500))
-        reply += sock.readAll();
-    return reply.startsWith(QByteArray("\xf0\xde\xbc\x0a", 4));
+    return answersBaichuan(ip, kReolinkPort, kPortConnectMs);
 }
 
 // All host IPs on the machine's IPv4 /24 subnets (private ranges only).

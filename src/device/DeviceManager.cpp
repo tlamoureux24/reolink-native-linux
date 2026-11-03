@@ -112,6 +112,7 @@ void DeviceManager::applyChannelStates(qint64 hostId, const QHash<int, bool> &ch
 
 void DeviceManager::dropSession(qint64 hostId)
 {
+    m_lanProbeAt.remove(hostId);
     const HostSession hs = m_sessions.take(hostId);
     if (hs.session && hs.alarmId)
         hs.session->unroute(hs.alarmId);
@@ -151,6 +152,65 @@ void DeviceManager::watchSessions()
         m_retryDelaySecs[hostId] = 15;
         validateAsync(hostId);
     }
+
+    constexpr qint64 kLanProbeMs = 30000;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_sessions.constBegin(); it != m_sessions.constEnd(); ++it) {
+        const qint64 hostId = it.key();
+        if (it->session->linkMode() == QLatin1String("tcp") || m_lanProbing.contains(hostId))
+            continue;
+        qint64 &at = m_lanProbeAt[hostId];
+        if (!at)
+            at = now + kLanProbeMs;
+        if (now < at)
+            continue;
+        at = now + kLanProbeMs;
+        probeLan(hostId);
+    }
+}
+
+bool DeviceManager::hostBusy(qint64 hostId) const
+{
+    for (auto it = m_playbackClients.constBegin(); it != m_playbackClients.constEnd(); ++it)
+        if (it.key() >= 0 && it.key() < m_entries.size() && m_entries.at(it.key()).rec.id == hostId
+            && !it.value().expired())
+            return true;
+    const QString prefix = QString::number(hostId) + u':';
+    for (auto it = m_talks.constBegin(); it != m_talks.constEnd(); ++it)
+        if (it.key().startsWith(prefix) && !it.value().isNull())
+            return true;
+    return false;
+}
+
+void DeviceManager::probeLan(qint64 hostId)
+{
+    const int row = rowForHostId(hostId);
+    if (row < 0 || forceUid())
+        return;
+    const QString addr = m_entries.at(row).rec.addr;
+    if (addr.isEmpty())
+        return;
+    m_lanProbing.insert(hostId);
+    m_pending.addFuture(QtConcurrent::run([this, hostId, addr] {
+        const bool answers = answersBaichuan(addr);
+        QMetaObject::invokeMethod(
+            this,
+            [this, hostId, answers] {
+                m_lanProbing.remove(hostId);
+                const HostSession hs = m_sessions.value(hostId);
+                if (!answers || !hs.session || hs.session->linkMode() == QLatin1String("tcp"))
+                    return;
+                if (hostBusy(hostId)) {
+                    m_lanProbeAt[hostId] = QDateTime::currentMSecsSinceEpoch() + 5000;
+                    return;
+                }
+                qCInfo(lcCore) << "host" << hostId << "answers on its address again: reopening its session there";
+                dropSession(hostId);
+                hs.session->close(QStringLiteral("reopened on the local network"));
+                validateAsync(hostId);
+            },
+            Qt::QueuedConnection);
+    }));
 }
 
 void DeviceManager::pollDetections()
@@ -618,6 +678,8 @@ void DeviceManager::applyValidation(qint64 hostId, const Validation &v)
             const Entry &old = m_entries.at(first + j);
             e.filesSub = old.filesSub; // learned by the last search
             e.filesMain = old.filesMain;
+            if (e.mainCodec.isEmpty())
+                e.mainCodec = old.mainCodec; // learned from its live stream
             m_entries[first + j] = e;
         }
         emit dataChanged(index(first), index(first + oldCount - 1));
@@ -744,8 +806,9 @@ void DeviceManager::validateAsync(qint64 hostId, const QString &newPassword, boo
             cr.subSize = c.subSize;
             cr.caps = c.caps;
             cr.uid = d.isNvr ? QString() : d.uid; // an NVR camera's own: not known yet
-            // The codec is in every frame's header; the stream is probed.
-            cr.codec.clear();
+            // Empty when the device doesn't name it: the stream is probed and
+            // the codec learned from its frames (startBaichuan).
+            cr.codec = c.codec;
             v.talk = v.talk || cr.caps.talk;
             v.channels.append(cr);
         }
@@ -1131,6 +1194,30 @@ void DeviceManager::startBaichuan(int row, qint64 startEpoch, StreamPlayer *play
     p.onAudio = [audio](const BcMediaParser::AudioFrame &a) { audio(a.data, a.aac); };
 
     auto client = std::make_shared<BaichuanClient>(p);
+    if (startEpoch <= 0 && mainStream && e.mainCodec.isEmpty()) {
+        // Devices that can't change their codec don't name it (cmd 56): learn
+        // it from the live stream's first frames, for Properties and the next
+        // HD stream (which then needs no probing).
+        const qint64 hostId = e.rec.id;
+        const int channel = e.channel;
+        const std::weak_ptr<BaichuanClient> weak = client;
+        auto *ctx = new QObject(player);
+        connect(player, &StreamPlayer::framesDecodedChanged, ctx, [this, ctx, weak, hostId, channel] {
+            const auto c = weak.lock();
+            if (!c) { // that stream is over
+                ctx->deleteLater();
+                return;
+            }
+            const QString f = c->ffmpegFormat();
+            if (f.isEmpty())
+                return;
+            for (int i = 0; i < m_entries.size(); ++i)
+                if (m_entries.at(i).rec.id == hostId && m_entries.at(i).channel == channel)
+                    m_entries[i].mainCodec = f == QLatin1String("hevc") ? QStringLiteral("h265")
+                                                                        : QStringLiteral("h264");
+            ctx->deleteLater();
+        });
+    }
     if (startEpoch > 0) {
         m_playbackClients.insert(row, client); // weak — for in-place seek
         // The client paces recordings, at the player's speed.

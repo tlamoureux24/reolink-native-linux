@@ -326,9 +326,14 @@ Popup {
                     RowLayout {
                         visible: !patrol.editing
                         spacing: 4
-                        Btn { label: patrol.running ? qsTr("Stop") : qsTr("Start"); primary: !patrol.running
+                        // Start and Stop both stay offered, as in the official
+                        // client: the cameras don't report a running patrol.
+                        Btn { label: qsTr("Start"); primary: true
                               enabledBtn: patrol.p !== null && patrol.stops.length > 0
-                              onClicked: Devices.ptzPatrol(root.deviceRow, patrol.p.id, !patrol.running) }
+                              onClicked: Devices.ptzPatrol(root.deviceRow, patrol.p.id, true) }
+                        Btn { label: qsTr("Stop")
+                              enabledBtn: patrol.p !== null && patrol.stops.length > 0
+                              onClicked: Devices.ptzPatrol(root.deviceRow, patrol.p.id, false) }
                         Btn { label: qsTr("Edit route")
                               enabledBtn: patrol.p !== null && presets.used.length > 0
                               onClicked: {

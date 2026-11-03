@@ -524,6 +524,8 @@ Item {
     }
     function choiceLabel(v) {
         switch (String(v)) {
+        case "h264": return "H.264";
+        case "h265": return "H.265";
         case "Auto": return qsTr("Auto");
         case "Manual": return qsTr("Manual");
         case "On": return qsTr("On");
@@ -960,8 +962,7 @@ Item {
                 Text {
                     text: (page.val("GetEnc","Enc","mainStream","size") || "—") + "  ·  "
                         + (page.val("GetEnc","Enc","mainStream","bitRate") || "—") + " kbps  ·  "
-                        + (page.val("GetEnc","Enc","mainStream","frameRate") || "—") + " fps  ·  "
-                        + String(page.val("GetEnc","Enc","mainStream","vType") || "—").toUpperCase()
+                        + (page.val("GetEnc","Enc","mainStream","frameRate") || "—") + " fps"
                     color: Theme.textMuted; font.pixelSize: 12
                 }
             }
@@ -973,6 +974,22 @@ Item {
                         + (page.val("GetEnc","Enc","subStream","frameRate") || "—") + " fps"
                     color: Theme.textMuted; font.pixelSize: 12
                 }
+            }
+            // Only devices whose codec can be changed name it (as the
+            // official client, the choice is shown for those alone).
+            ChoiceRow {
+                visible: (page.rng("GetEnc", "Enc", "mainStream").vType || []).length > 0
+                label: qsTr("Encoding format (main stream)"); enabledCtl: page.isAdmin
+                values: page.rng("GetEnc", "Enc", "mainStream").vType || []
+                value: page.val("GetEnc", "Enc", "mainStream", "vType") || ""
+                onCommit: (v) => Devices.applySetting(page.deviceRow, "SetEnc",
+                    { "Enc": { "channel": Devices.channelOf(page.deviceRow), "mainStream": { "vType": v } } })
+            }
+            Text {
+                visible: (page.rng("GetEnc", "Enc", "mainStream").vType || []).length > 0
+                Layout.fillWidth: true
+                text: qsTr("The device may need to restart for a change to apply. H.265 compresses better than H.264 but needs more decoding power.")
+                color: Theme.textMuted; font.pixelSize: 11; wrapMode: Text.WordWrap
             }
             SettingRow {
                 label: qsTr("Audio")
@@ -1243,7 +1260,8 @@ Item {
                     InfoRow {
                         Layout.fillWidth: true
                         label: qsTr("Disk %1").arg((modelData.number !== undefined ? modelData.number : 0) + 1)
-                        value: (modelData.storageType || qsTr("Disk"))
+                        value: (modelData.storageType === "sd" ? qsTr("SD card")
+                                : modelData.storageType === "hdd" ? qsTr("Hard disk") : qsTr("Disk"))
                              + "  ·  " + Math.round((modelData.capacity || 0) / 1024) + qsTr(" GB")
                              + "  ·  " + Math.round((modelData.size || 0) / 1024) + qsTr(" GB free")
                              + (modelData.mount ? "" : qsTr("  ·  not mounted"))

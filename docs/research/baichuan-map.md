@@ -221,6 +221,29 @@ almost every setter).
     151 token encodes user-management/reboot rights.
 13. Choice between 103 `INIT_HDD` and 223 `FMT_HDD_NOREBOOT`.
 
+Resolved since (2026-11-03):
+- *Codec*: cmd 56 carries `videoEncType` (0 H.264, 1 H.265) per stream only
+  on devices whose codec can be changed; the SDK offers the H.264/H.265
+  choice only when `BCSDK_GetSupportMainStreamVideoEncTypeConfig` (bit 1 of a
+  per-channel ability) says so, and the official UI hides "Encoding format"
+  otherwise. None of the six cameras sends it (RLC-811A Support `encCtrl` 1).
+  Their codec is read off the stream: frame headers can say H264 over H.265
+  (RLC-811A 4K main, live and recorded), so the first key frame's NAL types
+  decide (`BcMediaParser::isHevc`).
+- *Disk kind*: the cmd 102 parser reads `<type>` (0 hard disk, 1 SD card;
+  absent: unknown) — not `storageType`, which is the SDK's own JSON name.
+  Cameras leave it out; their login `DeviceInfo` has `sdCard` 1.
+- *Patrol body (20)*: the SDK's builder sends `<PtzCruise>` channelId,
+  `<cruiseList><cruise>` patrolId, enable, name (unless "invalid"),
+  `valueTable` (7 × 24 '0'/'1'), `<keyPosList>` with 16 `<keyPos>` slots
+  (keyPosId, presetId; for a set preset also speed, dwellTime, trackTime,
+  trackEnable). A disabled patrol is patrolId + enable 0 alone. Written with
+  two stops on an RLC-823A and read back identical (cmd 64 answers each
+  `<cruise>` with patrolId, enable, `starting`, name, keyPosList), then
+  removed with enable 0. The SDK parses `starting` and `cruising`; both are 0
+  for an idle patrol (which one flags a running patrol is untested: it moves
+  the camera).
+
 Most of 5, 6, 7, 9, 11 can be read from a single Get dump on a device
 (the app's `BaichuanControl::getConfigFlat` already flattens any reply).
 

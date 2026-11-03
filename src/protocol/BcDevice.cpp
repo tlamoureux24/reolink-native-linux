@@ -135,6 +135,8 @@ void parseCompression(const QByteArray &xml, Channel &c)
     if (!comp)
         return;
     c.mainSize = streamSize(comp->child(u"mainStream"));
+    if (const Node *main = comp->child(u"mainStream"); main && main->child(u"videoEncType"))
+        c.codec = main->intValue(u"videoEncType") == 1 ? QStringLiteral("h265") : QStringLiteral("h264");
     c.subSize = streamSize(comp->child(u"subStream"));
     c.thirdStream = comp->child(u"thirdStream") != nullptr;
 }

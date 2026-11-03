@@ -200,8 +200,12 @@ itself: with the address cut mid-run, the session was back by UID relay in
 under a second and the live view in three. Forced through the relay from
 home (`RL_FORCE_UID=1 RL_P2P_MODES=relay`), all six cameras connected (two
 after one retry: Reolink's servers answer parallel lookups unevenly), with
-live, alarms and playback. Not done: going back to the address when home
-again while a remote session still works (it stays remote until it drops).
+live, alarms and playback. Back home, a session reached by UID checks its
+device's address every 30 s (TCP 9000 and the Baichuan hello, no login) and,
+once it answers, is closed and reopened there — never during a recorded
+playback or a talk, which would break. Tried with the relay forced for the
+first 25 s (`RL_FORCE_UID_SECS=25 RL_P2P_MODES=relay`): all six cameras were
+back on TCP within 30–40 s, live view resuming by itself.
 
 **Step 8 — done, validated by the user (2026-11-03).** Removed: the HTTP-CGI
 client (`ReolinkHttpClient`), the HTTP request/parse helpers of `ReolinkApi`

@@ -307,7 +307,7 @@ private:
         QString status;
         Problem problem = Problem::Connecting; // until first validation lands
         int rotationOverride = 0;              // user view-rotation fix (degrees CW)
-        QString mainCodec = QStringLiteral("h264"); // sub stream is always h264
+        QString mainCodec; // "h264"/"h265"; empty = unknown, the stream is probed
         QSize mainSize;                             // GetEnc-declared main resolution
         QSize subSize;                              // GetEnc-declared sub resolution
         QString uid;                                // per-camera UID (Baichuan playback)
@@ -366,8 +366,16 @@ private:
     void applyDetection(qint64 hostId, int channel, const api::DetectionState &st);
     // An NVR's channels that dropped or returned (its cmd 145 pushes).
     void applyChannelStates(qint64 hostId, const QHash<int, bool> &chanOnline);
-    // Every second: a host whose session ended goes offline and is revalidated.
+    // Every second: a host whose session ended goes offline and is revalidated,
+    // and one reached by UID looks for its address again (probeLan).
     void watchSessions();
+    // A session reached by UID while its device's address answers again (back
+    // home): reopen it there, as a fresh start would. Every 30 s, and never
+    // during a recorded playback or a talk (hostBusy), which would break.
+    void probeLan(qint64 hostId);
+    bool hostBusy(qint64 hostId) const;
+    QHash<qint64, qint64> m_lanProbeAt; // host -> next probe (ms since epoch)
+    QSet<qint64> m_lanProbing;
     // Shared body of startBaichuanPlayback/startBaichuanLive (startEpoch<=0 = live).
     void startBaichuan(int row, qint64 startEpoch, rl::StreamPlayer *player, bool mainStream);
     void applyValidation(qint64 hostId, const Validation &v);

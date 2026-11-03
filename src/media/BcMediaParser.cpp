@@ -124,4 +124,25 @@ int BcMediaParser::append(const QByteArray &mediaBytes)
     return emitted;
 }
 
+// The first NAL of a key frame tells: H.265 VPS/SPS/PPS/IDR headers, else
+// H.264.
+bool BcMediaParser::isHevc(const VideoFrame &key)
+{
+    if (key.codec == Codec::H265)
+        return true;
+    const auto *d = reinterpret_cast<const uchar *>(key.annexB.constData());
+    const int n = int(key.annexB.size());
+    for (int k = 0; k + 4 < n; ++k) {
+        if (d[k] == 0 && d[k + 1] == 0 && d[k + 2] == 1) {
+            const uchar h = d[k + 3];
+            const int hevcType = (h >> 1) & 0x3F;
+            const int avcType = h & 0x1F;
+            if (avcType == 7 || avcType == 8 || avcType == 5 || avcType == 9 || avcType == 6)
+                return (hevcType >= 32 && hevcType <= 40) && (h & 0x81) == 0 && d[k + 4] == 1;
+            return hevcType >= 16 && hevcType <= 40;
+        }
+    }
+    return false;
+}
+
 } // namespace rl

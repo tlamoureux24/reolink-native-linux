@@ -174,16 +174,18 @@ struct SharedLive {
     std::atomic<qint64> lastMedia{0};
     std::atomic<bool> refused{false};
 };
-static std::mutex g_liveMutex;
-static std::map<std::tuple<BcSession *, int, bool>, std::shared_ptr<SharedLive>> g_live;
+// Never destroyed, like the session registry: at exit, session workers may
+// still be delivering into a stream while static objects are torn down.
+static std::mutex &g_liveMutex = *new std::mutex;
+static std::map<std::tuple<BcSession *, int, bool>, std::shared_ptr<SharedLive>> &g_live =
+    *new std::map<std::tuple<BcSession *, int, bool>, std::shared_ptr<SharedLive>>;
 
 void BaichuanClient::deliverShared(const BcMediaParser::VideoFrame &f)
 {
-    if (f.codec != BcMediaParser::Codec::Unknown) {
+    if (f.keyFrame) {
         QMutexLocker lock(&m_mutex);
         if (m_format.isEmpty())
-            m_format = (f.codec == BcMediaParser::Codec::H265) ? QStringLiteral("hevc")
-                                                               : QStringLiteral("h264");
+            m_format = BcMediaParser::isHevc(f) ? QStringLiteral("hevc") : QStringLiteral("h264");
     }
     if (!m_sharedKeyFrame && !f.keyFrame)
         return; // joined mid-stream: start at the next key frame
@@ -594,11 +596,10 @@ void BaichuanClient::runSessionReplay()
             continue;
         }
         const BcMediaParser::VideoFrame &f = it.video;
-        if (f.codec != BcMediaParser::Codec::Unknown) {
+        if (f.keyFrame) {
             QMutexLocker lock(&m_mutex);
             if (m_format.isEmpty())
-                m_format = (f.codec == BcMediaParser::Codec::H265) ? QStringLiteral("hevc")
-                                                                   : QStringLiteral("h264");
+                m_format = BcMediaParser::isHevc(f) ? QStringLiteral("hevc") : QStringLiteral("h264");
         }
         if (!started && !f.keyFrame)
             continue;

@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QMutex>
 #include <QElapsedTimer>
+#include <QTcpSocket>
 
 #include <cerrno>
 #include <cstring>
@@ -142,6 +143,37 @@ private:
 
 } // namespace
 
+bool answersBaichuan(const QString &host, int port, int connectMs)
+{
+    QTcpSocket sock;
+    sock.connectToHost(host, static_cast<quint16>(port));
+    if (!sock.waitForConnected(connectMs))
+        return false;
+    QByteArray hello;
+    const quint32 magic = 0x0ABCDEF0;
+    const quint32 cmd = 1;
+    hello.append(reinterpret_cast<const char *>(&magic), 4); // little-endian hosts
+    hello.append(reinterpret_cast<const char *>(&cmd), 4);
+    hello.append(QByteArray(4, '\0'));                     // no payload
+    hello.append(QByteArray(4, '\0'));                     // channel 0, message id 0
+    hello.append("\x12\xdc\x14\x65", 4);                   // status 0xdc12, class 0x6514
+    sock.write(hello);
+    sock.flush();
+    QByteArray reply;
+    while (reply.size() < 4 && sock.waitForReadyRead(1500))
+        reply += sock.readAll();
+    return reply.startsWith(QByteArray("\xf0\xde\xbc\x0a", 4));
+}
+
+bool forceUid()
+{
+    if (qEnvironmentVariableIsSet("RL_FORCE_UID"))
+        return true;
+    static const qint64 secs = qEnvironmentVariableIntValue("RL_FORCE_UID_SECS");
+    static QElapsedTimer since = [] { QElapsedTimer t; t.start(); return t; }();
+    return secs > 0 && since.elapsed() < secs * 1000;
+}
+
 std::unique_ptr<BcLink> openBcLink(const BcTarget &target, const std::atomic<bool> *abort,
                                    QString *error)
 {
@@ -162,10 +194,9 @@ std::unique_ptr<BcLink> openBcLink(const BcTarget &target, const std::atomic<boo
         return byUid();
     // A device known by its address and its UID: its address on the LAN
     // (TCP 9000) first; away from it, by UID through Reolink's P2P servers,
-    // as the official client reaches it. RL_FORCE_UID=1 skips the address
-    // (to try remote access from home).
+    // as the official client reaches it.
     const bool haveUid = !target.uid.isEmpty();
-    if (!haveUid || !qEnvironmentVariableIsSet("RL_FORCE_UID")) {
+    if (!haveUid || !forceUid()) {
         auto link = std::make_unique<BcTcpLink>(target);
         if (link->connectTo(target, haveUid ? 3000 : 5000, abort))
             return link;

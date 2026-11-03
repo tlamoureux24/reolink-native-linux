@@ -72,7 +72,8 @@ public:
     // Returns the number of bytes written, 0 on clean end, or <0 on abort/error.
     int read(unsigned char *buf, int size);
 
-    // "h264" / "hevc" once known (after the first frame); empty until then.
+    // "h264" / "hevc", read off the first key frame itself (its header label
+    // can be wrong); empty until then.
     QString ffmpegFormat();
 
 private:

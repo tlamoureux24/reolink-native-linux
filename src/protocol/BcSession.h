@@ -62,6 +62,9 @@ public:
     // Wait for connect + login; false on failure (see failure()/error()).
     bool waitReady(int timeoutMs, const std::atomic<bool> *abort = nullptr);
     bool isAlive() const;
+    // End the session now (its streams and requests end with it), e.g. to
+    // reopen it over a better link; `reason` becomes its error().
+    void close(const QString &reason);
     Failure failure() const;
     QString error() const;
 

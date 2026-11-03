@@ -179,7 +179,9 @@ bool getPtzPatrol(BcSession &s, int ch, QVariant *value, QString *error)
                                     {QStringLiteral("enable"), c->intValue(u"enable")},
                                     {QStringLiteral("name"), name.isEmpty() ? QStringLiteral("cruise%1").arg(id + 1) : name},
                                     {QStringLiteral("preset"), stops.isEmpty() ? QVariant() : QVariant(stops)},
-                                    {QStringLiteral("running"), c->intValue(u"cruising")}});
+                                    // The SDK reads both; an idle patrol has both 0.
+                                    {QStringLiteral("running"),
+                                     c->intValue(u"starting") || c->intValue(u"cruising") ? 1 : 0}});
         }
     }
     if (list.isEmpty()) // no route yet: the first one, empty
@@ -295,7 +297,8 @@ bool setPtzPatrol(BcSession &s, int ch, const QVariantMap &p, QString *error)
     const QVariantMap pt = p.value(QStringLiteral("PtzPatrol")).toMap();
     const QVariantList stops = pt.value(QStringLiteral("preset")).toList();
     // The SDK's <PtzCruise> builder (cmd 20): one <cruise> with its stops;
-    // valueTable is its 7 × 24 hours schedule, here every hour.
+    // valueTable is its 7 × 24 hours schedule, here every hour. Written and
+    // read back on an RLC-823A (two stops, then removed with enable 0).
     QByteArray keys;
     int k = 0;
     for (const QVariant &st : stops) {
@@ -598,9 +601,10 @@ bool setOsd(BcSession &s, int ch, const QVariantMap &p, QString *error)
     return request(s, ch, 45, xml, nullptr, error);
 }
 
-// Encoding (cmd 56/57 <Compression>). The codec is not in the reply: it is
-// in each frame's header, so vType is left out.
-bool getEnc(BcSession &s, int ch, QVariant *value, QString *error)
+// Encoding (cmd 56/57 <Compression>). A stream's codec (videoEncType, 0
+// H.264, 1 H.265) is in the reply only on devices whose codec can be changed;
+// as the official client, only those offer the choice.
+bool getEnc(BcSession &s, int ch, QVariant *value, QVariant *rng, QString *error)
 {
     QByteArray xml;
     if (!request(s, ch, 56, {}, &xml, error))
@@ -610,20 +614,28 @@ bool getEnc(BcSession &s, int ch, QVariant *value, QString *error)
     if (!c)
         return false;
     QVariantMap v{{QStringLiteral("channel"), ch}};
+    QVariantMap r;
     for (const char *k : {"mainStream", "subStream"}) {
         const Node *st = c->child(QString::fromLatin1(k));
         if (!st)
             continue;
         if (!v.contains(QStringLiteral("audio")))
             v.insert(QStringLiteral("audio"), st->intValue(u"audio"));
-        v.insert(QString::fromLatin1(k),
-                 QVariantMap{{QStringLiteral("bitRate"), st->intValue(u"bitRate")},
-                             {QStringLiteral("frameRate"), st->intValue(u"frame")},
-                             {QStringLiteral("size"), st->value(u"resolutionName")},
-                             {QStringLiteral("width"), st->intValue(u"width")},
-                             {QStringLiteral("height"), st->intValue(u"height")}});
+        QVariantMap m{{QStringLiteral("bitRate"), st->intValue(u"bitRate")},
+                      {QStringLiteral("frameRate"), st->intValue(u"frame")},
+                      {QStringLiteral("size"), st->value(u"resolutionName")},
+                      {QStringLiteral("width"), st->intValue(u"width")},
+                      {QStringLiteral("height"), st->intValue(u"height")}};
+        if (st->child(u"videoEncType")) {
+            m.insert(QStringLiteral("vType"), st->intValue(u"videoEncType") == 1 ? QStringLiteral("h265")
+                                                                                 : QStringLiteral("h264"));
+            r.insert(QString::fromLatin1(k),
+                     QVariantMap{{QStringLiteral("vType"), list({QStringLiteral("h264"), QStringLiteral("h265")})}});
+        }
+        v.insert(QString::fromLatin1(k), m);
     }
     *value = QVariantMap{{QStringLiteral("Enc"), v}};
+    *rng = QVariantMap{{QStringLiteral("Enc"), r}};
     return true;
 }
 
@@ -637,6 +649,14 @@ bool setEnc(BcSession &s, int ch, const QVariantMap &p, QString *error)
         const QString a = enc.value(QStringLiteral("audio")).toString();
         bcxml::setTagIn(xml, "mainStream", "audio", a); // one switch for both streams
         bcxml::setTagIn(xml, "subStream", "audio", a);
+    }
+    for (const char *k : {"mainStream", "subStream"}) {
+        const QString vt = enc.value(QString::fromLatin1(k)).toMap().value(QStringLiteral("vType")).toString();
+        if (!vt.isEmpty() && !bcxml::setTagIn(xml, k, "videoEncType", vt == QLatin1String("h265") ? "1" : "0")) {
+            if (error)
+                *error = QStringLiteral("this device's codec can't be changed");
+            return false;
+        }
     }
     return request(s, ch, 57, xml, nullptr, error);
 }
@@ -931,6 +951,13 @@ bool getHddInfo(BcSession &s, QVariant *value, QString *error)
         return false;
     // Sizes come as GB plus MB (capacity / capacityM, remainSize / remainSizeM);
     // the UI wants MB, as the HTTP API gave them.
+    // The disk's kind is its <type> (0 hard disk, 1 SD card, as the SDK reads
+    // it). Cameras leave it out; one that takes an SD card (login DeviceInfo
+    // <sdCard>) and is no recorder then holds an SD card.
+    const Node login = bcxml::parse(s.loginInfo());
+    const Node *info = login.find(u"DeviceInfo");
+    const bool sdOnly = info && info->intValue(u"sdCard") > 0
+                        && !info->value(u"type").contains(QLatin1String("nvr"), Qt::CaseInsensitive);
     QVariantList disks;
     for (const Node *h : list->children(u"HddInfo")) {
         QVariantMap d{{QStringLiteral("number"), h->intValue(u"number")},
@@ -938,8 +965,11 @@ bool getHddInfo(BcSession &s, QVariant *value, QString *error)
                       {QStringLiteral("size"), h->intValue(u"remainSize") * 1024 + h->intValue(u"remainSizeM")},
                       {QStringLiteral("format"), h->intValue(u"format")},
                       {QStringLiteral("mount"), h->intValue(u"mount")}};
-        if (h->child(u"storageType"))
-            d.insert(QStringLiteral("storageType"), h->intValue(u"storageType"));
+        if (h->child(u"type"))
+            d.insert(QStringLiteral("storageType"), h->intValue(u"type") == 1 ? QStringLiteral("sd")
+                                                                             : QStringLiteral("hdd"));
+        else if (sdOnly)
+            d.insert(QStringLiteral("storageType"), QStringLiteral("sd"));
         disks.append(d);
     }
     *value = QVariantMap{{QStringLiteral("HddInfo"), disks}};
@@ -1311,7 +1341,7 @@ bool get(BcSession &s, int channel, const QString &command, QVariant *value, QVa
     if (command == QLatin1String("GetOsd"))
         return getOsd(s, channel, value, error);
     if (command == QLatin1String("GetEnc"))
-        return getEnc(s, channel, value, error);
+        return getEnc(s, channel, value, rng, error);
     if (command == QLatin1String("GetAudioAlarmV20"))
         return getAudioAlarm(s, channel, value, error);
     if (command == QLatin1String("GetAudioCfg"))

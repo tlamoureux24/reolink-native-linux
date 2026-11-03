@@ -40,6 +40,9 @@ struct Channel {
     QSize mainSize;
     QSize subSize;
     bool thirdStream = false; // a "Balanced" stream exists
+    // Main stream codec, "h264"/"h265", when the device names it (cmd 56
+    // videoEncType: only devices whose codec can be changed do); else empty.
+    QString codec;
     api::ChannelCaps caps;
 };
 

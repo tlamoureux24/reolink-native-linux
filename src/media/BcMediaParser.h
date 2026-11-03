@@ -37,6 +37,11 @@ public:
         QByteArray data;  // the frame's payload, as the device sent it
     };
 
+    // Whether a key frame is H.265, from the stream itself: frames can be
+    // labelled H264 in their BCMedia header while carrying H.265 (an
+    // RLC-811A's 4K main stream, live and recorded).
+    static bool isHevc(const VideoFrame &key);
+
     // Called for each complete video frame, in stream order.
     std::function<void(const VideoFrame &)> onVideo;
     // Called for each complete audio frame, in stream order (optional).

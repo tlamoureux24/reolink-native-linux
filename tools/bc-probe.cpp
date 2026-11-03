@@ -25,6 +25,7 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <QFile>
+#include <QJsonDocument>
 #include <QMutex>
 
 #include <cstdio>
@@ -55,24 +56,9 @@ int main(int argc, char **argv)
         {"body", "Body XML for every --cmd.", "xml"},
         {"listen", "Then print device pushes for this many seconds.", "s", "0"},
         {"login", "Print the login reply."},
-        {"search-day", "List a day's recordings (cmd 14/15) and the month's days (cmd 142).", "yyyy-mm-dd"},
-        {"main", "With --search-day / --replay: the main stream (default sub)."},
-        {"replay", "With --search-day: play the day's first file (cmd 5) for 12 s with this "
-                   "<playSpeed> (0 = none) and report how fast the device sends it.", "speed"},
-        {"play", "With --search-day: play from this time of day through BaichuanClient for "
-                 "--seconds at --rate, as the app does, and report the pace.", "hh:mm:ss"},
-        {"seconds", "With --play: how long.", "s", "30"},
-        {"rate", "With --play: playback speed.", "x", "1"},
-        {"seek", "With --play: halfway, seek to this time of day.", "hh:mm:ss"},
-        {"snapshot", "Take a snapshot (cmd 109) into this file (--main for full size).", "file"},
-        {"bc-get", "Print the Baichuan answer to this HTTP Get command name, as the app "
-                   "turns it into the HTTP JSON (repeatable).", "cmd"},
-        {"download", "With --search-day: download the day's first file of 20-60 s with cmd 8 "
-                     "into this file and report what arrives.", "file"},
-        {"cut", "With --search-day: cmd 143 from the day's first 20-60 s file's start + 2 s, "
-                "for this many seconds; report what arrives.", "s"},
-        {"export", "With --search-day: export 15 s from the day's first 20-60 s file's start "
-                   "(cmd 143) into this MP4, as the app does.", "file"},
+        {"channel", "Channel (0-based) for --bc-get / --bc-set.", "n", "0"},
+        {"bc-get", "Print this HTTP Get command name's value and range as the app turns the "
+                   "Baichuan answer into the HTTP JSON (repeatable).", "cmd"},
         {"bc-set", "Write this HTTP Set command through the app's translation, with "
                    "--param as its JSON parameter (changes the device!).", "cmd"},
         {"param", "JSON parameter for --bc-set.", "json"},
@@ -129,6 +115,24 @@ int main(int argc, char **argv)
         const QByteArray body = decrypt(reply, key, &ext);
         std::printf("--- cmd %u ch %d: status %u, %lld ms\n%s%s\n", cmd, ch, reply.status, t.elapsed(),
                     ext.constData(), body.constData());
+    }
+
+    const int channel = cli.value("channel").toInt();
+    for (const QString &cmd : cli.values("bc-get")) {
+        QVariant value, range;
+        QString error;
+        const bool ok = bcset::get(*s, channel, cmd, &value, &range, &error, sp.username);
+        std::printf("--- %s: %s\n%s\nrange %s\n", qPrintable(cmd), ok ? "ok" : qPrintable("FAILED " + error),
+                    QJsonDocument::fromVariant(value).toJson().constData(),
+                    QJsonDocument::fromVariant(range).toJson(QJsonDocument::Compact).constData());
+    }
+    if (cli.isSet("bc-set")) {
+        const QString cmd = cli.value("bc-set");
+        const QVariantMap param = QJsonDocument::fromJson(cli.value("param").toUtf8()).toVariant().toMap();
+        QString error;
+        const bool ok = !param.isEmpty() && bcset::set(*s, channel, cmd, param, &error, sp.username);
+        std::printf("--- %s: %s\n", qPrintable(cmd),
+                    ok ? "ok" : qPrintable("FAILED " + (param.isEmpty() ? QStringLiteral("bad --param") : error)));
     }
 
     const int listen = cli.value("listen").toInt();

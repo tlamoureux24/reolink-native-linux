@@ -209,6 +209,12 @@ bool BcSession::isAlive() const
     return m_state != State::Closed;
 }
 
+void BcSession::close(const QString &reason)
+{
+    m_stop = true;         // the worker leaves its loop
+    finish(Failure::None, reason); // closed at once: acquire() opens a new one
+}
+
 BcSession::Failure BcSession::failure() const
 {
     QMutexLocker lock(&m_mutex);

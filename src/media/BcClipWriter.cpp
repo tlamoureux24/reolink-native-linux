@@ -74,27 +74,6 @@ bool parseAdts(const QByteArray &f, int *hdr, int *rate, QByteArray *asc, int *c
     return true;
 }
 
-// H.265 or H.264, from the stream itself: recorded frames can be labelled
-// H264 in their BCMedia header while carrying H.265 (an RLC-811A's main
-// recordings). The first NAL of a key frame tells: H.265 VPS/SPS/PPS/IDR
-// headers, else H.264.
-bool looksHevc(const QByteArray &annexB)
-{
-    const auto *d = reinterpret_cast<const uchar *>(annexB.constData());
-    const int n = int(annexB.size());
-    for (int k = 0; k + 4 < n; ++k) {
-        if (d[k] == 0 && d[k + 1] == 0 && d[k + 2] == 1) {
-            const uchar h = d[k + 3];
-            const int hevcType = (h >> 1) & 0x3F;
-            const int avcType = h & 0x1F;
-            if (avcType == 7 || avcType == 8 || avcType == 5 || avcType == 9 || avcType == 6)
-                return (hevcType >= 32 && hevcType <= 40) && (h & 0x81) == 0 && d[k + 4] == 1;
-            return hevcType >= 16 && hevcType <= 40;
-        }
-    }
-    return false;
-}
-
 } // namespace
 
 BcClipWriter::BcClipWriter(QString path) : m_path(std::move(path)) {}
@@ -115,7 +94,7 @@ bool BcClipWriter::open(const BcMediaParser::VideoFrame &key, int width, int hei
         m_error = QStringLiteral("cannot create the MP4");
         return false;
     }
-    const bool hevc = key.codec == BcMediaParser::Codec::H265 || looksHevc(key.annexB);
+    const bool hevc = BcMediaParser::isHevc(key);
     AVStream *v = avformat_new_stream(m_oc, nullptr);
     if (!v)
         return false;

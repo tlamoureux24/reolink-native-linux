@@ -252,7 +252,7 @@ ApplicationWindow {
     }
     Timer {
         running: typeof propertiesRow !== "undefined" && propertiesRow >= 0
-        interval: 3000
+        interval: 8000 // after a maximized camera's HD stream has started
         onTriggered: window.showCameraProperties(propertiesRow)
     }
     function showCameraProperties(row) {
@@ -274,7 +274,7 @@ ApplicationWindow {
             { label: qsTr("Status"), value: c.online ? qsTr("Online") : qsTr("Offline") },
             { label: qsTr("Channel"), value: String(c.channel) },
             { label: qsTr("Main stream"),
-              value: [String(c.codec || "").toUpperCase(), c.mainSize || ""]
+              value: [c.codec === "h265" ? "H.265" : c.codec === "h264" ? "H.264" : "", c.mainSize || ""]
                          .filter(function (s) { return s.length > 0; }).join(" · ") || "—" },
             { label: qsTr("Sub stream"), value: c.subSize || "—" },
             { label: qsTr("Features"), value: caps.length ? caps.join(", ") : "—" },

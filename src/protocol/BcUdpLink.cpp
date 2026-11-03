@@ -61,8 +61,9 @@ struct KnownUid {
     Endpoint relay;
     qint64 at = 0;
 };
-QMutex g_knownMutex;
-QHash<QString, KnownUid> g_known;
+// Never destroyed: UID link workers may still use them while the process exits.
+QMutex &g_knownMutex = *new QMutex;
+QHash<QString, KnownUid> &g_known = *new QHash<QString, KnownUid>;
 constexpr qint64 kKnownMs = 30 * 60 * 1000;
 constexpr qint64 kKnownGraceMs = 3000; // then ask every server anyway
 

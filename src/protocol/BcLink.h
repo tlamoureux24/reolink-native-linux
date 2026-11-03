@@ -43,6 +43,16 @@ struct BcTarget {
     bool viaUid = false;
 };
 
+// Whether a Baichuan device answers at host:port, without logging in: the
+// legacy hello (cmd 1, class 0x6514) asks for a login nonce, and a Reolink
+// device replies with a message carrying the Baichuan magic. Blocking.
+bool answersBaichuan(const QString &host, int port = 9000, int connectMs = 500);
+
+// Remote access tried from home: RL_FORCE_UID=1 skips devices' addresses, and
+// RL_FORCE_UID_SECS=<s> only for the first s seconds after start (so going
+// back to the address can be tried too).
+bool forceUid();
+
 // Open a link: by UID only when viaUid; else TCP to the address, and when that
 // fails and a UID is known, by UID (P2P) — one device, whichever way reaches
 // it. Blocking (up to ~5 s for TCP, ~20 s by UID); `abort` cancels it early.

@@ -137,7 +137,7 @@
 <context>
     <name>BcLink</name>
     <message>
-        <location filename="../src/protocol/BcLink.cpp" line="+176" />
+        <location filename="../src/protocol/BcLink.cpp" line="+207" />
         <source>couldn't reach the device</source>
         <translation>impossible de joindre l'appareil</translation>
     </message>
@@ -511,13 +511,13 @@
     </message>
     <message>
         <location line="+52" />
-        <location line="+1155" />
+        <location line="+1173" />
         <location line="+64" />
         <source>Loading…</source>
         <translation>Chargement…</translation>
     </message>
     <message>
-        <location line="-1193" />
+        <location line="-1211" />
         <source>Select a device</source>
         <translation>Choisir un appareil</translation>
     </message>
@@ -592,7 +592,7 @@
         <translation>Formater le disque</translation>
     </message>
     <message>
-        <location line="+95" />
+        <location line="+97" />
         <location line="+12" />
         <source>Auto</source>
         <translation>Auto</translation>
@@ -798,12 +798,12 @@
     </message>
     <message>
         <location line="+1" />
-        <location line="+431" />
+        <location line="+446" />
         <source>Edit…</source>
         <translation>Modifier…</translation>
     </message>
     <message>
-        <location line="-425" />
+        <location line="-440" />
         <source>Smart (AI) detection</source>
         <translation>Détection intelligente (IA)</translation>
     </message>
@@ -935,12 +935,22 @@
         <translation>Flux principal (Clair)</translation>
     </message>
     <message>
-        <location line="+10" />
+        <location line="+9" />
         <source>Sub stream (Fluent)</source>
         <translation>Flux secondaire (Fluide)</translation>
     </message>
     <message>
+        <location line="+12" />
+        <source>Encoding format (main stream)</source>
+        <translation>Format d'encodage (flux principal)</translation>
+    </message>
+    <message>
         <location line="+9" />
+        <source>The device may need to restart for a change to apply. H.265 compresses better than H.264 but needs more decoding power.</source>
+        <translation>Il peut être nécessaire de redémarrer l'appareil pour appliquer le changement. Le H.265 compresse mieux que le H.264 mais demande plus de puissance de décodage.</translation>
+    </message>
+    <message>
+        <location line="+4" />
         <source>Audio</source>
         <translation>Audio</translation>
     </message>
@@ -1158,14 +1168,24 @@
     </message>
     <message>
         <location line="+18" />
-        <location line="+15" />
+        <location line="+16" />
         <source>Disk %1</source>
         <translation>Disque %1</translation>
     </message>
     <message>
-        <location line="-14" />
+        <location line="-15" />
+        <source>SD card</source>
+        <translation>Carte SD</translation>
+    </message>
+    <message>
+        <location line="+1" />
         <source>Disk</source>
         <translation>Disque</translation>
+    </message>
+    <message>
+        <location line="+0" />
+        <source>Hard disk</source>
+        <translation>Disque dur</translation>
     </message>
     <message>
         <location line="+1" />
@@ -2556,75 +2576,75 @@ Cliquez sur + pour en ajouter un.</translation>
     <name>rl::DeviceManager</name>
     <message>
         <location filename="../src/device/DeviceManager.cpp" line="+59" />
-        <location line="+379" />
-        <location line="+418" />
+        <location line="+439" />
+        <location line="+421" />
         <source>ready</source>
         <translation>prêt</translation>
     </message>
     <message>
-        <location line="-797" />
-        <location line="+283" />
+        <location line="-860" />
+        <location line="+343" />
         <location line="+26" />
         <location line="+29" />
-        <location line="+459" />
+        <location line="+462" />
         <source>connecting…</source>
         <translation>connexion…</translation>
     </message>
     <message>
-        <location line="-713" />
-        <location line="+574" />
+        <location line="-775" />
+        <location line="+635" />
         <source>unreachable</source>
         <translation>injoignable</translation>
     </message>
     <message>
-        <location line="-613" />
-        <location line="+622" />
-        <location line="+128" />
+        <location line="-675" />
+        <location line="+684" />
+        <location line="+129" />
         <source>online</source>
         <translation>en ligne</translation>
     </message>
     <message>
-        <location line="-750" />
-        <location line="+486" />
-        <location line="+264" />
+        <location line="-813" />
+        <location line="+546" />
+        <location line="+267" />
         <source>offline</source>
         <translation>hors ligne</translation>
     </message>
     <message>
-        <location line="-750" />
-        <location line="+622" />
-        <location line="+128" />
+        <location line="-813" />
+        <location line="+684" />
+        <location line="+129" />
         <source>online · remote</source>
         <translation>en ligne · à distance</translation>
     </message>
     <message>
-        <location line="-542" />
+        <location line="-545" />
         <source>the device did not answer like a Reolink camera or NVR</source>
         <translation>l'appareil n'a pas répondu comme une caméra ou un NVR Reolink</translation>
     </message>
     <message>
         <location line="+4" />
-        <location line="+398" />
+        <location line="+400" />
         <source>login rejected — check the user name and password</source>
         <translation>connexion refusée — vérifiez le nom d'utilisateur et le mot de passe</translation>
     </message>
     <message>
-        <location line="-395" />
+        <location line="-397" />
         <source>no answer on port 9000 — is it a Reolink camera or NVR?</source>
         <translation>pas de réponse sur le port 9000 — est-ce bien une caméra ou un NVR Reolink ?</translation>
     </message>
     <message>
-        <location line="+371" />
+        <location line="+373" />
         <source>keyring unavailable — password not saved</source>
         <translation>trousseau indisponible — mot de passe non enregistré</translation>
     </message>
     <message>
-        <location line="+122" />
+        <location line="+123" />
         <location line="+53" />
         <location line="+18" />
         <location line="+82" />
         <location line="+99" />
-        <location line="+129" />
+        <location line="+153" />
         <location line="+3" />
         <location line="+55" />
         <location line="+130" />
@@ -2632,7 +2652,7 @@ Cliquez sur + pour en ajouter un.</translation>
         <translation>appareil pas prêt</translation>
     </message>
     <message>
-        <location line="-509" />
+        <location line="-533" />
         <source>failed</source>
         <translation>échec</translation>
     </message>
@@ -2652,7 +2672,7 @@ Cliquez sur + pour en ajouter un.</translation>
         <translation>échec de l'export</translation>
     </message>
     <message>
-        <location line="+124" />
+        <location line="+148" />
         <source>settings fetch failed</source>
         <translation>échec de la lecture des réglages</translation>
     </message>

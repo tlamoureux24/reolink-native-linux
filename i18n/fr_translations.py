@@ -48,6 +48,11 @@ FR = {
     "Close": "Fermer",
     "Language": "Langue",
     "Appearance": "Apparence",
+    "Encoding format (main stream)": "Format d'encodage (flux principal)",
+    "The device may need to restart for a change to apply. H.265 compresses better than H.264 but needs more decoding power.":
+        "Il peut être nécessaire de redémarrer l'appareil pour appliquer le changement. Le H.265 compresse mieux que le H.264 mais demande plus de puissance de décodage.",
+    "SD card": "Carte SD",
+    "Hard disk": "Disque dur",
     "Theme": "Thème",
     "Dark": "Sombre",
     "Light": "Clair",
