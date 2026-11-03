@@ -7,23 +7,17 @@
 #include <cstdint>
 #include <memory>
 
-class QTcpSocket;
-
 namespace rl { class BcSession; }
 
-// Synchronous Baichuan (BC, TCP 9000) settings/config RPC client — the transport
-// the official Reolink apps use for reading/writing device settings. The NVR's
-// HTTP-CGI web server (api.cgi) is a fragile bolt-on that returns 502 under load;
-// the native BC daemon on port 9000 does not, so settings that flake over HTTP
-// (push/email/ftp enable, image/ISP, recording, AI) are reliable here.
+// Synchronous Baichuan settings/config requests inside a device's session
+// (BcSession), as the official client sends every command: get a command's
+// XML, read-modify-write its fields, and two-way talk.
 //
-// Blocking request/response: open() connects + logs in, then get()/setEnable()
-// issue command RPCs multiplexed over the one connection (auto-incrementing
-// mess_id). Designed to run on a worker thread (like the HTTP settings path).
+// Blocking request/response, for a worker thread.
 //
-// Clean-room: wire format (24-byte class 0x6414 header, ch_id=channel+1, two
-// independently-AES-encrypted segments split at payload_offset, read-modify-write
-// SET) from the documented protocol + MIT reolink_aio. No AGPL neolink code.
+// Clean-room: wire format (24-byte class 0x6414 header, ch_id=channel+1,
+// AES-CFB segments, read-modify-write SET) from the documented protocol + MIT
+// reolink_aio. No AGPL neolink code.
 namespace rl {
 
 class BaichuanControl
@@ -42,8 +36,7 @@ public:
     explicit BaichuanControl(std::shared_ptr<BcSession> session);
     ~BaichuanControl();
 
-    // Connect + modern-AES login. Returns false on failure (unreachable, session
-    // limit, bad credentials). Blocking, ~sub-second on a LAN.
+    // Wait for the session to be logged in; false if it is not.
     bool open();
     void close();
 
@@ -105,12 +98,9 @@ public:
     void talkStop(int channel);
 
 private:
-    Params m_p;
-    std::shared_ptr<BcSession> m_session; // set: everything goes through it
-    std::unique_ptr<QTcpSocket> m_sock;
+    std::shared_ptr<BcSession> m_session;
     QByteArray m_aesKey;
-    QByteArray m_netBuf;      // socket bytes buffered past the last parsed reply
-    quint32 m_messId = 0;     // per-connection RPC counter
+    quint32 m_messId = 0;     // id of the last request
     quint32 m_talkMessId = 0; // mess_id of the cmd 201 that opened the talk session
 };
 

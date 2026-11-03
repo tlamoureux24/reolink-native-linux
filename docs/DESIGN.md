@@ -6,6 +6,13 @@
 **Date:** 2026-07-09
 **Goal in one line:** A fully native Linux desktop application that replicates the official Reolink Client (Windows/macOS) 1:1 — device list, live grid, PTZ, playback/timeline, events, downloads, and the full settings surface — with hardware-accelerated video for up to 16 simultaneous panes.
 
+> **Revision, 2026-11 — one protocol.** The client now does everything over
+> Baichuan, the way the official client does (its SDK never calls the HTTP-CGI
+> API nor opens RTSP): one session per device, by its address (TCP 9000) or by
+> its UID (P2P), carrying live view, playback, events, PTZ, settings and talk.
+> The HTTP-CGI client, RTSP live view and HTTP-FLV playback described below are
+> gone; see `docs/research/baichuan-migration.md` and `baichuan-map.md`.
+
 ---
 
 ## 1. Overview, Goals, and the "Native" Constraint

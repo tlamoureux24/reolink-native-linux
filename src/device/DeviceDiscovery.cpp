@@ -6,7 +6,6 @@
 #include <QTcpSocket>
 #include <QtConcurrent/QtConcurrent>
 
-#include <curl/curl.h>
 
 namespace rl {
 
@@ -15,47 +14,29 @@ namespace {
 constexpr int kPortConnectMs = 500; // per-host TCP connect timeout to :9000
 constexpr int kReolinkPort = 9000;  // Baichuan — a strong Reolink signature
 
-// Confirm the host really speaks the Reolink HTTP-CGI API: an unauthenticated
-// GetAbility returns a JSON array with an rspCode error ("please login first").
-size_t discardBody(char *ptr, size_t size, size_t nmemb, void *userdata)
-{
-    auto *out = static_cast<QByteArray *>(userdata);
-    if (out->size() < 4096)
-        out->append(ptr, static_cast<qsizetype>(size * nmemb));
-    return size * nmemb;
-}
-
+// Confirm the host really speaks Baichuan, as the official client finds a
+// device: the legacy hello (cmd 1, class 0x6514) asks for a login nonce, and a
+// Reolink device answers with a message carrying the Baichuan magic.
 bool confirmReolink(const QString &ip)
 {
-    CURL *curl = curl_easy_init();
-    if (!curl)
-        return false;
-    QByteArray body;
-    const QByteArray url = QStringLiteral("https://%1/cgi-bin/api.cgi?cmd=GetAbility").arg(ip).toUtf8();
-    const char *payload = R"([{"cmd":"GetAbility","action":0,"param":{"User":{"userName":"x"}}}])";
-    curl_slist *headers = curl_slist_append(nullptr, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_URL, url.constData());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discardBody);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 4L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    const CURLcode rc = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    // The Reolink API answers with a JSON array carrying "rspCode".
-    return rc == CURLE_OK && body.contains("rspCode") && body.contains("cmd");
-}
-
-bool portOpen(const QString &ip, int port)
-{
     QTcpSocket sock;
-    sock.connectToHost(ip, static_cast<quint16>(port));
-    return sock.waitForConnected(kPortConnectMs);
+    sock.connectToHost(ip, static_cast<quint16>(kReolinkPort));
+    if (!sock.waitForConnected(kPortConnectMs))
+        return false;
+    QByteArray hello;
+    const quint32 magic = 0x0ABCDEF0;
+    const quint32 cmd = 1;
+    hello.append(reinterpret_cast<const char *>(&magic), 4); // little-endian hosts
+    hello.append(reinterpret_cast<const char *>(&cmd), 4);
+    hello.append(QByteArray(4, '\0'));                     // no payload
+    hello.append(QByteArray(4, '\0'));                     // channel 0, message id 0
+    hello.append("\x12\xdc\x14\x65", 4);                   // status 0xdc12, class 0x6514
+    sock.write(hello);
+    sock.flush();
+    QByteArray reply;
+    while (reply.size() < 4 && sock.waitForReadyRead(1500))
+        reply += sock.readAll();
+    return reply.startsWith(QByteArray("\xf0\xde\xbc\x0a", 4));
 }
 
 // All host IPs on the machine's IPv4 /24 subnets (private ranges only).
@@ -88,11 +69,7 @@ QStringList localSubnetHosts()
 
 } // namespace
 
-DeviceDiscovery::DeviceDiscovery(QObject *parent) : QObject(parent)
-{
-    static std::once_flag flag;
-    std::call_once(flag, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
-}
+DeviceDiscovery::DeviceDiscovery(QObject *parent) : QObject(parent) {}
 
 DeviceDiscovery::~DeviceDiscovery() = default;
 
@@ -143,12 +120,12 @@ void DeviceDiscovery::scan()
             const QString ip = watcher->result();
             watcher->deleteLater();
             if (!ip.isEmpty())
-                reportFound(ip, QStringLiteral("https"));
+                reportFound(ip, QStringLiteral("baichuan"));
             if (--m_pending <= 0)
                 setScanning(false);
         });
         watcher->setFuture(QtConcurrent::run(pool, [ip]() -> QString {
-            if (portOpen(ip, kReolinkPort) && confirmReolink(ip))
+            if (confirmReolink(ip))
                 return ip;
             return {};
         }));

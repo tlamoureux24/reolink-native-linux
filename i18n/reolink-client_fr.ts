@@ -24,9 +24,9 @@
         <translation>Saisissez le nom d'utilisateur.</translation>
     </message>
     <message>
-        <location line="+25" />
-        <source>Can't reach %1 — check the address and port, and that the device is powered on and on your network.</source>
-        <translation>Impossible de joindre %1 — vérifiez l'adresse et le port, et que l'appareil est allumé et sur votre réseau.</translation>
+        <location line="+21" />
+        <source>Can't reach %1 — check the address, and that the device is powered on and on your network.</source>
+        <translation>Impossible de joindre %1 — vérifiez l'adresse, et que l'appareil est allumé et sur votre réseau.</translation>
     </message>
     <message>
         <location line="+4" />
@@ -114,17 +114,7 @@
         <translation>Mot de passe</translation>
     </message>
     <message>
-        <location line="+21" />
-        <source>Use HTTPS</source>
-        <translation>Utiliser HTTPS</translation>
-    </message>
-    <message>
-        <location line="+9" />
-        <source>Port (default)</source>
-        <translation>Port (par défaut)</translation>
-    </message>
-    <message>
-        <location line="+6" />
+        <location line="+5" />
         <source>An NVR adds all its cameras automatically.</source>
         <translation>Un NVR ajoute automatiquement toutes ses caméras.</translation>
     </message>
@@ -1642,11 +1632,12 @@
     </message>
     <message>
         <location line="+1" />
+        <location line="+17" />
         <source>UID</source>
         <translation>UID</translation>
     </message>
     <message>
-        <location line="+6" />
+        <location line="-11" />
         <location line="+20" />
         <source>Remove device</source>
         <translation>Supprimer l'appareil</translation>
@@ -1667,12 +1658,7 @@
         <translation>Adresse</translation>
     </message>
     <message>
-        <location line="+1" />
-        <source> (HTTPS)</source>
-        <translation> (HTTPS)</translation>
-    </message>
-    <message>
-        <location line="+1" />
+        <location line="+2" />
         <source>Account</source>
         <translation>Compte</translation>
     </message>
@@ -2385,30 +2371,30 @@
     </message>
     <message>
         <location line="+26" />
-        <location line="+233" />
+        <location line="+246" />
         <source>Properties</source>
         <translation>Propriétés</translation>
     </message>
     <message>
-        <location line="-231" />
-        <location line="+233" />
+        <location line="-244" />
+        <location line="+246" />
         <source>Settings</source>
         <translation>Réglages</translation>
     </message>
     <message>
-        <location line="-230" />
-        <location line="+233" />
+        <location line="-243" />
+        <location line="+246" />
         <source>Reconnect</source>
         <translation>Reconnecter</translation>
     </message>
     <message>
-        <location line="-231" />
-        <location line="+233" />
+        <location line="-244" />
+        <location line="+246" />
         <source>Update credentials…</source>
         <translation>Modifier les identifiants…</translation>
     </message>
     <message>
-        <location line="-230" />
+        <location line="-243" />
         <source>Reboot NVR</source>
         <translation>Redémarrer le NVR</translation>
     </message>
@@ -2418,7 +2404,7 @@
         <translation>Supprimer le NVR</translation>
     </message>
     <message>
-        <location line="+234" />
+        <location line="+247" />
         <source>Rotate view 90° (now %1°)</source>
         <translation>Pivoter la vue de 90° (actuellement %1°)</translation>
     </message>
@@ -2530,14 +2516,14 @@ Cliquez sur + pour en ajouter un.</translation>
     <name>rl::DeviceManager</name>
     <message>
         <location filename="../src/device/DeviceManager.cpp" line="+59" />
-        <location line="+381" />
+        <location line="+379" />
         <location line="+418" />
         <source>ready</source>
         <translation>prêt</translation>
     </message>
     <message>
-        <location line="-799" />
-        <location line="+285" />
+        <location line="-797" />
+        <location line="+283" />
         <location line="+26" />
         <location line="+29" />
         <location line="+459" />
@@ -2545,28 +2531,28 @@ Cliquez sur + pour en ajouter un.</translation>
         <translation>connexion…</translation>
     </message>
     <message>
-        <location line="-715" />
-        <location line="+576" />
+        <location line="-713" />
+        <location line="+574" />
         <source>unreachable</source>
         <translation>injoignable</translation>
     </message>
     <message>
-        <location line="-615" />
-        <location line="+624" />
+        <location line="-613" />
+        <location line="+622" />
         <location line="+128" />
         <source>online</source>
         <translation>en ligne</translation>
     </message>
     <message>
-        <location line="-752" />
-        <location line="+488" />
+        <location line="-750" />
+        <location line="+486" />
         <location line="+264" />
         <source>offline</source>
         <translation>hors ligne</translation>
     </message>
     <message>
-        <location line="-752" />
-        <location line="+624" />
+        <location line="-750" />
+        <location line="+622" />
         <location line="+128" />
         <source>online · remote</source>
         <translation>en ligne · à distance</translation>
@@ -2601,12 +2587,12 @@ Cliquez sur + pour en ajouter un.</translation>
         <location line="+129" />
         <location line="+3" />
         <location line="+55" />
-        <location line="+131" />
+        <location line="+130" />
         <source>device not ready</source>
         <translation>appareil pas prêt</translation>
     </message>
     <message>
-        <location line="-510" />
+        <location line="-509" />
         <source>failed</source>
         <translation>échec</translation>
     </message>
@@ -2632,7 +2618,7 @@ Cliquez sur + pour en ajouter un.</translation>
     </message>
     <message>
         <location line="+33" />
-        <location line="+131" />
+        <location line="+130" />
         <location line="+130" />
         <location line="+76" />
         <location line="+77" />

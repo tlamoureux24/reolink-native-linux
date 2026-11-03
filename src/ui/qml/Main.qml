@@ -288,8 +288,8 @@ ApplicationWindow {
         propsDialog.subheading = host.kind === "nvr" ? qsTr("Reolink NVR") : qsTr("Camera");
         propsDialog.rows = [
             { label: qsTr("Model"), value: host.model || "—" },
-            { label: qsTr("Address"),
-              value: host.addr + ":" + host.port + (host.https ? qsTr(" (HTTPS)") : "") },
+            { label: qsTr("Address"), value: host.addr },
+            { label: qsTr("UID"), value: host.uid || "—" },
             { label: qsTr("Account"), value: host.username + (host.isAdmin ? qsTr(" · admin") : "") },
             { label: qsTr("Cameras"),
               value: host.onlineCount + " / " + host.channelCount + qsTr(" online") }

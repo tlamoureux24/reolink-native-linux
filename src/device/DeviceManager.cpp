@@ -288,10 +288,8 @@ QHash<int, QByteArray> DeviceManager::roleNames() const
 }
 
 void DeviceManager::testDevice(const QString &addr, const QString &username,
-                               const QString &password, bool https, int port)
+                               const QString &password)
 {
-    Q_UNUSED(https)
-    Q_UNUSED(port)
     m_pending.addFuture(QtConcurrent::run([this, addr, username, password] {
         // Log in over Baichuan, as the device will be used, and read its name.
         BcSession::Params sp;
@@ -377,14 +375,14 @@ void DeviceManager::updateCredentials(int row, const QString &username, const QS
 }
 
 void DeviceManager::addDevice(const QString &addr, const QString &username,
-                              const QString &password, bool https, int port)
+                              const QString &password)
 {
+    // Reached over Baichuan (TCP 9000, or by UID): the port/https columns of
+    // the hosts table are left at their defaults, unused.
     HostRecord rec;
-    rec.kind = QStringLiteral("camera"); // refined to "nvr" after GetDevInfo
+    rec.kind = QStringLiteral("camera"); // refined to "nvr" after validation
     rec.name = addr;
     rec.addr = addr;
-    rec.https = https;
-    rec.port = port > 0 ? port : (https ? 443 : 80);
     rec.username = username;
     rec.id = m_db->addHost(rec);
     if (rec.id < 0) {
@@ -1291,8 +1289,7 @@ QVariantMap DeviceManager::hostInfo(qint64 hostId) const
     m["kind"] = host->rec.kind;
     m["model"] = host->rec.model;
     m["addr"] = host->rec.addr;
-    m["port"] = host->rec.port;
-    m["https"] = host->rec.https;
+    m["uid"] = host->rec.uid;
     m["username"] = host->rec.username;
     m["online"] = onlineCount > 0;
     m["channelCount"] = channelCount;

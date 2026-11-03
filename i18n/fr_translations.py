@@ -437,6 +437,9 @@ FR = {
     "no network path to the camera was found": "aucun chemin réseau vers la caméra n'a été trouvé",
     "cancelled": "annulé",
     "the camera closed the connection": "la caméra a fermé la connexion",
+    "Can't reach %1 — check the address, and that the device is powered on and on your network.":
+        "Impossible de joindre %1 — vérifiez l'adresse, et que l'appareil est allumé et sur votre réseau.",
+    "UID": "UID",
     "online · remote": "en ligne · à distance",
     "export failed": "échec de l'export",
     "couldn't reach the device": "impossible de joindre l'appareil",

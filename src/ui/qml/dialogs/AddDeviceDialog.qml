@@ -49,9 +49,7 @@ Dialog {
             return;
         }
         testing = true;
-        Devices.testDevice(addrField.text.trim(), userField.text, passwordField.text,
-                           httpsCheck.checked,
-                           portField.text.length > 0 ? parseInt(portField.text) : 0);
+        Devices.testDevice(addrField.text.trim(), userField.text, passwordField.text);
     }
 
     Connections {
@@ -61,16 +59,14 @@ Dialog {
                 return;
             dialog.testing = false;
             if (ok) {
-                Devices.addDevice(addrField.text.trim(), userField.text,
-                                  passwordField.text, httpsCheck.checked,
-                                  portField.text.length > 0 ? parseInt(portField.text) : 0);
+                Devices.addDevice(addrField.text.trim(), userField.text, passwordField.text);
                 dialog.close();
                 return;
             }
             var addr = addrField.text.trim();
             if (problem === "transport") {
                 dialog.setError(function () {
-                    return qsTr("Can't reach %1 — check the address and port, and that the device is powered on and on your network.")
+                    return qsTr("Can't reach %1 — check the address, and that the device is powered on and on your network.")
                         .arg(addr) + "\n" + message;
                 });
             } else if (problem === "auth") {
@@ -328,37 +324,6 @@ Dialog {
                     placeholderText: qsTr("Password")
                     echoMode: TextInput.Password
                 }
-                RowLayout {
-                    CheckBox {
-                        id: httpsCheck
-                        checked: true
-                        Layout.alignment: Qt.AlignVCenter
-                        indicator: Rectangle {
-                            implicitWidth: 18; implicitHeight: 18
-                            anchors.verticalCenter: parent.verticalCenter
-                            radius: 4
-                            color: httpsCheck.checked ? Theme.accent : Theme.surfaceAlt
-                            border.color: httpsCheck.checked ? Theme.accent : Theme.border
-                            Text {
-                                anchors.centerIn: parent
-                                text: "\u2713"; visible: httpsCheck.checked
-                                color: Theme.window; font.pixelSize: 12; font.bold: true
-                            }
-                        }
-                        contentItem: Text {
-                            text: qsTr("Use HTTPS")
-                            color: Theme.text
-                            font.pixelSize: 12
-                            leftPadding: httpsCheck.indicator.width + 8
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                    }
-                    ThemedField {
-                        id: portField
-                        placeholderText: qsTr("Port (default)")
-                        validator: IntValidator { bottom: 1; top: 65535 }
-                    }
-                }
                 Text {
                     Layout.fillWidth: true
                     text: qsTr("An NVR adds all its cameras automatically.")
@@ -402,7 +367,6 @@ Dialog {
     onClosed: {
         addrField.text = "";
         passwordField.text = "";
-        portField.text = "";
         streamNameField.text = "";
         streamUrlField.text = "";
         discoveredModel.clear();

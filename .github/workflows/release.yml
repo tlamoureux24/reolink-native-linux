@@ -24,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libavformat-dev libavcodec-dev libavutil-dev \
-            libswscale-dev libcurl4-openssl-dev libsecret-1-dev libsqlite3-dev \
+            libswscale-dev libsecret-1-dev libsqlite3-dev \
             libfuse2 wget
       - name: Build + install into AppDir
         run: |

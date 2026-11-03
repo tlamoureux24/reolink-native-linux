@@ -87,7 +87,7 @@ public:
     // this first so a typo'd address or rejected password becomes an inline
     // error instead of a phantom "connecting…" row. Result via testDeviceResult.
     Q_INVOKABLE void testDevice(const QString &addr, const QString &username,
-                                const QString &password, bool https, int port);
+                                const QString &password);
     // User-driven revalidation of a host (sidebar "Reconnect").
     Q_INVOKABLE void reconnect(int row);
     // Status words are stored translated; re-translate them after a language
@@ -104,7 +104,7 @@ public:
     Q_INVOKABLE void setRotationOverride(int row, int degrees);
 
     Q_INVOKABLE void addDevice(const QString &addr, const QString &username,
-                               const QString &password, bool https = true, int port = 0);
+                               const QString &password);
     // Direct stream URL (rtsp://…, file …) — testing and generic-RTSP escape hatch.
     // Any embedded credentials are stripped to the keyring, not persisted in the DB.
     Q_INVOKABLE void addStreamUrl(const QString &name, const QString &url);

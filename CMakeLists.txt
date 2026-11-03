@@ -16,7 +16,6 @@ qt_standard_project_setup(REQUIRES 6.5)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libavformat libavcodec libavutil libswscale libswresample)
-pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 
 # ---------------------------------------------------------------------------
@@ -33,7 +32,6 @@ add_library(reolink_core STATIC
     src/core/SingleInstance.h src/core/SingleInstance.cpp
     src/protocol/Json.h
     src/protocol/ReolinkApi.h src/protocol/ReolinkApi.cpp
-    src/protocol/ReolinkHttpClient.h src/protocol/ReolinkHttpClient.cpp
     src/protocol/BcCrypto.h src/protocol/BcCrypto.cpp
     src/protocol/BcLink.h src/protocol/BcLink.cpp
     src/protocol/BcUdp.h src/protocol/BcUdp.cpp
@@ -57,7 +55,7 @@ add_library(reolink_core STATIC
 target_include_directories(reolink_core PUBLIC src third_party)
 target_link_libraries(reolink_core PUBLIC
     Qt6::Core Qt6::Gui Qt6::Sql Qt6::Multimedia Qt6::Concurrent Qt6::Network Qt6::DBus
-    PkgConfig::FFMPEG PkgConfig::CURL PkgConfig::SECRET)
+    PkgConfig::FFMPEG PkgConfig::SECRET)
 
 # ---------------------------------------------------------------------------
 # Application

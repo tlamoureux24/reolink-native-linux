@@ -203,6 +203,15 @@ after one retry: Reolink's servers answer parallel lookups unevenly), with
 live, alarms and playback. Not done: going back to the address when home
 again while a remote session still works (it stays remote until it drops).
 
+**Step 8 — done, validated by the user (2026-11-03).** Removed: the HTTP-CGI
+client (`ReolinkHttpClient`), the HTTP request/parse helpers of `ReolinkApi`
+(it now only holds the device types the UI binds to) and their tests,
+`BaichuanControl`'s own-connection mode (it works in the session only), the
+add-device dialog's HTTPS and port fields, and libcurl: LAN discovery now
+confirms a device by its Baichuan hello (the device answers with the
+Baichuan magic) — all six cameras found in 5 s. bc-probe lost its HTTP
+comparisons. DESIGN.md carries a note that the HTTP/RTSP parts are gone.
+
 ## Risks
 
 - **NVR:** the user has none at the moment, so NVR paths are written from the
