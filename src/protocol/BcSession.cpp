@@ -322,13 +322,13 @@ bool BcSession::request(quint32 cmd, quint8 channel, const QByteArray &ext, cons
 
 bool BcSession::requestXml(quint32 cmd, quint8 channel, const QByteArray &extXml,
                            const QByteArray &bodyXml, QByteArray *replyXml, quint16 *status,
-                           int timeoutMs)
+                           int timeoutMs, quint32 *messIdOut)
 {
     const QByteArray key = aesKey();
     BcMessage reply;
     if (!request(cmd, channel, extXml.isEmpty() ? QByteArray() : bc::aesCfb(extXml, key, false),
                  bodyXml.isEmpty() ? QByteArray() : bc::aesCfb(bodyXml, key, false), &reply,
-                 timeoutMs))
+                 timeoutMs, messIdOut))
         return false;
     if (status)
         *status = reply.status;

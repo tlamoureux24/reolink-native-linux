@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "protocol/BaichuanControl.h"
 
 #include <QAudioFormat>
@@ -17,6 +19,8 @@ class QIODevice;
 
 namespace rl {
 
+class BcSession;
+
 // Two-way talk to one camera: captures the default microphone, cuts it into
 // the camera's frames (TalkAbility: typically 1024 samples of 16 kHz mono),
 // IMA-ADPCM encodes them and streams them over a dedicated Baichuan session
@@ -30,7 +34,8 @@ class TalkSession : public QObject
 {
     Q_OBJECT
 public:
-    TalkSession(BaichuanControl::Params params, int channel, QObject *parent = nullptr);
+    // Talks inside the device's Baichuan session, as the official client.
+    TalkSession(std::shared_ptr<BcSession> session, int channel, QObject *parent = nullptr);
     ~TalkSession() override;
 
     void start(); // connect + negotiate on the worker, then open the microphone
@@ -48,7 +53,7 @@ private:
     void onMicData();
     void pushPcm16k(const qint16 *samples, int count);
 
-    BaichuanControl::Params m_params;
+    std::shared_ptr<BcSession> m_session;
     int m_channel = 0;
     std::thread m_worker;
     std::atomic<bool> m_abort{false};

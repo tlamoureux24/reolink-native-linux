@@ -127,6 +127,33 @@ JPEG even for the sub stream, in about 0.7 s; thumbnails are scaled down
 here). The 10 s `GetMdState` / `GetAiState` polling and the HTTP `Snap` are
 gone: in 90 s of running the client made no HTTP request at all.
 
+**Step 5 — done, validated by the user (2026-11-03).**
+- *PTZ* moves, presets and patrols go through the session: cmd 18
+  `<PtzControl>` (the HTTP op with a lower-case first letter: left, zoomInc,
+  startPatrol…), cmd 19 `<PtzPreset>` (toPos / setPos / delPos). The PTZ
+  panel's settings are offered to the UI in the HTTP API's JSON shape by
+  `bcset` (get 294 zoom/focus with its range, 224 autofocus, 190 presets, 64
+  patrols, 332 guard, 299 AI tracking; set 295, 225, 19, 20, 331, 300 —
+  get-modify-set as the SDK and reolink_aio). Every Get was compared with the
+  HTTP answer on two RLC-823A: identical, but for fields the UI never reads
+  (`afType`, `trackTask`, `imgName`). The patrol write (cmd 20 `<PtzCruise>`)
+  follows the SDK's builder; its `valueTable` (7 × 24 schedule) is sent all
+  on — no patrol exists on these cameras to read one back.
+- *Clip export* cuts the span with cmd 143 `DOWNLOAD_CUT` (the device sends
+  that span's BCMedia, ~10× real time, then stops) and writes it into an MP4
+  here without re-encoding (`BcClipWriter`): video with the frames' own
+  timestamps, AAC audio from its ADTS headers. Checked: 15 s HD exports of an
+  RLC-811A (H.265 3840×2160) and a Duo 2 (H.265 4608×1728) decode without an
+  error. Note: recorded frames can carry an `H264` label in their BCMedia
+  header while holding H.265 (RLC-811A main recordings), so the codec is read
+  from the NAL units. cmd 8 `DOWNLOAD` (by file) also answers with BCMedia.
+- *Two-way talk* (cmd 10 / 201 / 202 / 11) runs in the device's session
+  instead of a connection of its own (`BaichuanControl` can now work inside a
+  session; settings will use that in step 6). Not tried: it would play sound
+  through a camera.
+- Removed: the HTTP PtzCtrl, NvrDownload/Download export and the unused
+  HD-clip download.
+
 ## Risks
 
 - **NVR:** the user has none at the moment, so NVR paths are written from the

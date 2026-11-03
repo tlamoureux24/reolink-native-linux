@@ -39,7 +39,9 @@ add_library(reolink_core STATIC
     src/protocol/BcUdp.h src/protocol/BcUdp.cpp
     src/protocol/BcUdpLink.h src/protocol/BcUdpLink.cpp
     src/protocol/BcSession.h src/protocol/BcSession.cpp
+    src/protocol/BcXml.h src/protocol/BcXml.cpp
     src/protocol/BcDevice.h src/protocol/BcDevice.cpp
+    src/protocol/BcSettings.h src/protocol/BcSettings.cpp
     src/protocol/BcRecordings.h src/protocol/BcRecordings.cpp
     src/protocol/BaichuanClient.h src/protocol/BaichuanClient.cpp
     src/protocol/BaichuanControl.h src/protocol/BaichuanControl.cpp
@@ -48,6 +50,7 @@ add_library(reolink_core STATIC
     src/device/EventManager.h src/device/EventManager.cpp
     src/media/StreamPlayer.h src/media/StreamPlayer.cpp
     src/media/BcMediaParser.h src/media/BcMediaParser.cpp
+    src/media/BcClipWriter.h src/media/BcClipWriter.cpp
     src/media/ImaAdpcm.h src/media/ImaAdpcm.cpp
     src/media/TalkSession.h src/media/TalkSession.cpp
 )

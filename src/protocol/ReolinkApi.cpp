@@ -184,17 +184,6 @@ LoginResult parseLogin(const QByteArray &body)
     return out;
 }
 
-Json ptzCtrl(int channel, const QString &op, int speed, int presetId)
-{
-    Json param = {{"channel", channel}, {"op", op.toStdString()}};
-    // Stop takes no speed; directional/zoom ops do; ToPos also takes an id.
-    if (op != QLatin1String(ptz::Stop))
-        param["speed"] = qBound(1, speed, 64);
-    if (presetId >= 0)
-        param["id"] = presetId;
-    return command(QStringLiteral("PtzCtrl"), std::move(param));
-}
-
 // A capability is "present" when its {ver} (or bare int) is > 0.
 // Ability version; -1 when the key is absent (so callers can fall back).
 static int capVersion(const Json &chn, const char *key)

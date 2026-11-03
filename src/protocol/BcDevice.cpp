@@ -3,79 +3,18 @@
 #include "core/Log.h"
 #include "protocol/BcCrypto.h"
 #include "protocol/BcSession.h"
+#include "protocol/BcXml.h"
 
 #include <QElapsedTimer>
 #include <QMutex>
 #include <QThread>
-#include <QXmlStreamReader>
 
 namespace rl::bcdev {
 
 namespace {
 
-// A reply as a small tree: enough to read the device's flat XML.
-struct Node {
-    QString name;
-    QString text;
-    QList<Node> kids;
-
-    const Node *child(QStringView n) const
-    {
-        for (const Node &k : kids)
-            if (k.name == n)
-                return &k;
-        return nullptr;
-    }
-    // Depth-first: the first element called `n` under this one.
-    const Node *find(QStringView n) const
-    {
-        for (const Node &k : kids) {
-            if (k.name == n)
-                return &k;
-            if (const Node *f = k.find(n))
-                return f;
-        }
-        return nullptr;
-    }
-    QString value(QStringView n) const
-    {
-        const Node *c = child(n);
-        return c ? c->text.trimmed() : QString();
-    }
-    int intValue(QStringView n, int dflt = 0) const
-    {
-        bool ok = false;
-        const int v = value(n).toInt(&ok);
-        return ok ? v : dflt;
-    }
-};
-
-Node parse(const QByteArray &xml)
-{
-    Node root;
-    QList<Node *> stack{&root};
-    QXmlStreamReader r(xml);
-    while (!r.atEnd()) {
-        switch (r.readNext()) {
-        case QXmlStreamReader::StartElement: {
-            Node *parent = stack.last();
-            parent->kids.append(Node{r.name().toString(), {}, {}});
-            stack.append(&parent->kids.last());
-            break;
-        }
-        case QXmlStreamReader::Characters:
-            stack.last()->text += r.text();
-            break;
-        case QXmlStreamReader::EndElement:
-            if (stack.size() > 1)
-                stack.removeLast();
-            break;
-        default:
-            break;
-        }
-    }
-    return root;
-}
+using bcxml::Node;
+using bcxml::parse;
 
 bool bit(int v, int n)
 {

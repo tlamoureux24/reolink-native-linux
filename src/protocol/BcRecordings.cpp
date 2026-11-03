@@ -1,9 +1,14 @@
 #include "BcRecordings.h"
 
+#include "protocol/BcCrypto.h"
 #include "protocol/BcSession.h"
 #include "protocol/ReolinkApi.h"
 
+#include <QDateTime>
+#include <QElapsedTimer>
+#include <QMutex>
 #include <QRegularExpression>
+#include <QThread>
 
 #include <algorithm>
 
@@ -169,6 +174,74 @@ bool searchDay(BcSession &s, int channel, const QString &uid, const QDate &date,
               [](const Recording &a, const Recording &b) { return a.start < b.start; });
     *out = files;
     return true;
+}
+
+bool downloadClip(BcSession &s, int channel, const QString &uid, const QDateTime &from,
+                  const QDateTime &to, bool mainStream,
+                  const std::function<void(const BcMediaParser::VideoFrame &, int, int)> &onVideo,
+                  const std::function<void(const BcMediaParser::AudioFrame &)> &onAudio,
+                  const std::atomic<bool> *abort, QString *error)
+{
+    const QByteArray body =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<FileInfoList version=\"1.1\">\n<FileInfo>\n<uid>"
+        + uid.toUtf8() + "</uid>\n<logicChnBitmap>255</logicChnBitmap>\n<channelId>"
+        + QByteArray::number(channel) + "</channelId>\n<supportSub>" + QByteArray(mainStream ? "0" : "1")
+        + "</supportSub>\n<streamType>" + (mainStream ? "mainStream" : "subStream") + "</streamType>\n"
+        + timeXml("startTime", from.date(), from.time()) + timeXml("endTime", to.date(), to.time())
+        + "</FileInfo>\n</FileInfoList>\n</body>\n";
+    struct State {
+        QMutex mutex;
+        BcMediaParser parser; // session worker only
+        qint64 lastMedia = 0;
+        bool refused = false;
+    };
+    auto st = std::make_shared<State>();
+    st->parser.onVideo = [st, &onVideo](const BcMediaParser::VideoFrame &f) {
+        onVideo(f, st->parser.declaredWidth(), st->parser.declaredHeight());
+    };
+    st->parser.onAudio = [&onAudio](const BcMediaParser::AudioFrame &a) { onAudio(a); };
+    const QByteArray key = s.aesKey();
+    const quint32 id = s.newMessId();
+    QElapsedTimer clock;
+    clock.start();
+    s.route(id, [st, key, &clock](const BcMessage &m) {
+        if (m.cmd != 143)
+            return;
+        const int off = int(m.payloadOffset);
+        QMutexLocker lock(&st->mutex);
+        if (!off) {
+            if (m.status != 0 && m.status != 200)
+                st->refused = true;
+            return; // the XML reply
+        }
+        st->lastMedia = clock.elapsed();
+        const QByteArray ext = bc::aesCfb(m.body.left(off), key, true);
+        QByteArray payload = m.body.mid(off);
+        const int p = ext.indexOf("<encryptLen>");
+        if (p >= 0 && !payload.isEmpty()) {
+            const int n = ext.mid(p + 12, ext.indexOf("</encryptLen>", p) - p - 12).toInt();
+            payload = bc::aesCfb(payload.left(n), key, true) + payload.mid(n);
+        }
+        st->parser.append(payload);
+    });
+    s.send(143, quint8(channel + 1), id, bc::aesCfb(BcSession::channelExtension(channel), key, false),
+           bc::aesCfb(body, key, false));
+    // Done when the media stops for 3 s (or never starts within 20 s).
+    bool done = false, gotMedia = false, refused = false;
+    while (!done && s.isAlive() && !(abort && *abort) && clock.elapsed() < 15 * 60 * 1000) {
+        QThread::msleep(100);
+        QMutexLocker lock(&st->mutex);
+        refused = st->refused;
+        gotMedia = st->lastMedia > 0;
+        done = refused || (gotMedia ? clock.elapsed() - st->lastMedia > 3000 : clock.elapsed() > 20000);
+    }
+    s.unroute(id);
+    if (!done && s.isAlive()) // stopped early: tell the device (cmd 144)
+        s.send(144, quint8(channel + 1), id, bc::aesCfb(BcSession::channelExtension(channel), key, false),
+               bc::aesCfb(body, key, false));
+    if (!gotMedia && error)
+        *error = refused ? QStringLiteral("refused") : QStringLiteral("no recording covers this moment");
+    return gotMedia && (done || !s.isAlive());
 }
 
 } // namespace rl::bcrec

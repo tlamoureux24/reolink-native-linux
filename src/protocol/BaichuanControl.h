@@ -9,6 +9,8 @@
 
 class QTcpSocket;
 
+namespace rl { class BcSession; }
+
 // Synchronous Baichuan (BC, TCP 9000) settings/config RPC client — the transport
 // the official Reolink apps use for reading/writing device settings. The NVR's
 // HTTP-CGI web server (api.cgi) is a fragile bolt-on that returns 502 under load;
@@ -35,6 +37,9 @@ public:
     };
 
     explicit BaichuanControl(Params params);
+    // Inside the device's session (BcSession), as the official client sends
+    // every command: no connection of its own.
+    explicit BaichuanControl(std::shared_ptr<BcSession> session);
     ~BaichuanControl();
 
     // Connect + modern-AES login. Returns false on failure (unreachable, session
@@ -101,6 +106,7 @@ public:
 
 private:
     Params m_p;
+    std::shared_ptr<BcSession> m_session; // set: everything goes through it
     std::unique_ptr<QTcpSocket> m_sock;
     QByteArray m_aesKey;
     QByteArray m_netBuf;      // socket bytes buffered past the last parsed reply

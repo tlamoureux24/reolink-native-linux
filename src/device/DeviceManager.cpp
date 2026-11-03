@@ -4,11 +4,13 @@
 
 #include "core/Log.h"
 #include "core/Paths.h"
+#include "media/BcClipWriter.h"
 #include "media/StreamPlayer.h"
 #include "protocol/BaichuanClient.h"
 #include "protocol/BaichuanControl.h"
 #include "protocol/BcDevice.h"
 #include "protocol/BcRecordings.h"
+#include "protocol/BcSettings.h"
 #include "protocol/BcSession.h"
 #include "protocol/ReolinkHttpClient.h"
 
@@ -773,35 +775,35 @@ std::shared_ptr<ReolinkHttpClient> DeviceManager::clientFor(int row)
     return e.client;
 }
 
+// PTZ goes through the device's session (cmd 18 / 19), as the official client.
 void DeviceManager::ptzMove(int row, const QString &op, int speed)
 {
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return;
     const int ch = m_entries.at(row).channel;
     m_pending.addFuture(QtConcurrent::run(
-        [client, ch, op, speed] { client->call(Json::array({api::ptzCtrl(ch, op, speed)})); }));
+        [session, ch, op, speed] { bcset::ptzControl(*session, ch, op, speed); }));
 }
 
 void DeviceManager::ptzStop(int row)
 {
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return;
     const int ch = m_entries.at(row).channel;
     m_pending.addFuture(QtConcurrent::run(
-        [client, ch] { client->call(Json::array({api::ptzCtrl(ch, QStringLiteral("Stop"))})); }));
+        [session, ch] { bcset::ptzControl(*session, ch, QStringLiteral("Stop"), 32); }));
 }
 
 void DeviceManager::ptzPreset(int row, int presetId)
 {
-    auto client = clientFor(row);
-    if (!client)
+    const auto session = sessionFor(row);
+    if (!session)
         return;
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([client, ch, presetId] {
-        client->call(Json::array({api::ptzCtrl(ch, QStringLiteral("ToPos"), 32, presetId)}));
-    }));
+    m_pending.addFuture(QtConcurrent::run(
+        [session, ch, presetId] { bcset::ptzToPreset(*session, ch, presetId); }));
 }
 
 QString DeviceManager::talkKey(int row) const
@@ -820,12 +822,12 @@ void DeviceManager::startTalk(int row)
     if (row < 0 || row >= m_entries.size() || isTalking(row))
         return;
     const Entry &e = m_entries.at(row);
-    if (!e.primed) {
+    if (!e.primed || !sessionFor(row)) {
         emit talkStateChanged(row, false, tr("device not ready"));
         return;
     }
     const QString key = talkKey(row);
-    auto *talk = new TalkSession({e.rec.addr, 9000, e.rec.username, e.password}, e.channel, this);
+    auto *talk = new TalkSession(sessionFor(row), e.channel, this);
     m_talks.insert(key, talk);
     // Rows can move while talking: resolve the current row when reporting.
     auto rowOf = [this, key] {
@@ -872,19 +874,16 @@ void DeviceManager::retranslateStatuses()
 
 void DeviceManager::ptzPatrol(int row, int patrolId, bool start)
 {
-    auto client = clientFor(row);
-    if (!client) {
+    const auto session = sessionFor(row);
+    if (!session) {
         emit ptzPatrolDone(row, false, tr("device not ready"));
         return;
     }
     const int ch = m_entries.at(row).channel;
     const QString op = start ? QStringLiteral("StartPatrol") : QStringLiteral("StopPatrol");
-    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, op, patrolId] {
-        const api::BatchResult b = client->call(Json::array({api::ptzCtrl(ch, op, 32, patrolId)}));
-        const bool ok = b.transportOk && !b.results.isEmpty() && b.results.first().ok;
-        const QString error = ok ? QString()
-                            : (!b.results.isEmpty() && !b.results.first().detail.isEmpty()
-                                   ? b.results.first().detail : tr("failed"));
+    m_pending.addFuture(QtConcurrent::run([this, session, row, ch, op, patrolId] {
+        const bool ok = bcset::ptzControl(*session, ch, op, 32, patrolId);
+        const QString error = ok ? QString() : tr("failed");
         QMetaObject::invokeMethod(
             this, [this, row, ok, error] { emit ptzPatrolDone(row, ok, error); },
             Qt::QueuedConnection);
@@ -1072,182 +1071,45 @@ QSize DeviceManager::declaredSize(int row, bool mainStream) const
 }
 
 
-void DeviceManager::requestHdClip(int row, qint64 startEpoch, int durationSecs)
-{
-    auto client = clientFor(row);
-    if (!client || row < 0 || row >= m_entries.size() || startEpoch <= 0) {
-        emit hdClipFailed(row, tr("device not ready"));
-        return;
-    }
-    const Entry &e = m_entries.at(row);
-    if (e.rec.kind == QLatin1String("stream") || !e.primed) {
-        emit hdClipFailed(row, tr("no recordings on this device"));
-        return;
-    }
-    const int ch = e.channel;
-    const QString host = e.rec.addr;
-    const int port = e.rec.port;
-    const bool https = e.rec.https;
-    // NvrDownload takes wall-clock local times (like Search), not the FLV
-    // playback clock — no offset applied here.
-    const QDateTime start = QDateTime::fromSecsSinceEpoch(startEpoch);
-    const QDateTime end = start.addSecs(qBound(2, durationSecs, 120));
-    const QString startStamp = start.toString(QStringLiteral("yyyyMMddHHmmss"));
-
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, host, port, https, start, end,
-                                           startStamp, startEpoch] {
-        QString error;
-        QString localPath;
-        const api::BatchResult b =
-            client->call(Json::array({api::nvrDownloadBody(ch, start, end, QStringLiteral("main"))}));
-        if (b.transportOk && !b.results.isEmpty() && b.results.first().ok) {
-            const QVector<api::DownloadFile> files = api::parseNvrDownload(b.results.first().value);
-            // Prefer the clip named for the requested start; otherwise the largest.
-            api::DownloadFile pick;
-            for (const api::DownloadFile &f : files)
-                if (f.fileName.contains(startStamp)) {
-                    pick = f;
-                    break;
-                }
-            if (pick.fileName.isEmpty())
-                for (const api::DownloadFile &f : files)
-                    if (f.size > pick.size)
-                        pick = f;
-
-            if (pick.fileName.isEmpty()) {
-                error = tr("no clip available for this moment");
-            } else {
-                const QString url =
-                    api::downloadUrl(host, port, https, pick.fileName, client->token());
-                const QString dir = Paths::dataDir() + QStringLiteral("/hdcache");
-                QDir().mkpath(dir);
-                // Keep only the current clip — these files are large.
-                for (const QFileInfo &fi : QDir(dir).entryInfoList(QDir::Files))
-                    QFile::remove(fi.absoluteFilePath());
-                const QString path = dir + QStringLiteral("/clip_") + startStamp + QStringLiteral(".mp4");
-                QString dlErr;
-                if (client->downloadToFile(url, path, 120, &dlErr)) // slow NVR download
-                    localPath = path;
-                else
-                    error = dlErr.isEmpty() ? tr("clip download failed") : dlErr;
-            }
-        } else {
-            error = b.error.isEmpty() ? tr("clip request failed") : b.error;
-        }
-        QMetaObject::invokeMethod(
-            this,
-            [this, row, localPath, startEpoch, error] {
-                if (!localPath.isEmpty())
-                    emit hdClipReady(row, localPath, startEpoch);
-                else
-                    emit hdClipFailed(row, error);
-            },
-            Qt::QueuedConnection);
-    }));
-}
-
 void DeviceManager::exportClip(int row, qint64 startEpoch, int durationSecs)
 {
-    auto client = clientFor(row);
-    if (!client || row < 0 || row >= m_entries.size() || startEpoch <= 0) {
+    const auto session = sessionFor(row);
+    if (!session || startEpoch <= 0) {
         emit clipExportFailed(row, tr("device not ready"));
         return;
     }
     const Entry &e = m_entries.at(row);
     const int ch = e.channel;
-    const QString host = e.rec.addr;
-    const int port = e.rec.port;
-    const bool https = e.rec.https;
+    const QString uid = e.uid.isEmpty() ? e.hostUid : e.uid;
+    const QSize size = e.mainSize;
     const QString safe = QString(e.chanName.isEmpty() ? e.rec.name : e.chanName)
                              .replace(QRegularExpression(QStringLiteral("[^\\w-]")),
                                       QStringLiteral("_"));
     const QDateTime start = QDateTime::fromSecsSinceEpoch(startEpoch);
     const QDateTime end = start.addSecs(qBound(2, durationSecs, 300));
-    const QString startStamp = start.toString(QStringLiteral("yyyyMMddHHmmss"));
-
-    // Standalone cameras have no NvrDownload ("not support", rspCode -9 on a
-    // Duo 2 PoE). They download recordings by name: find the main-stream files
-    // overlapping [start,end] and fetch each whole (they are short event clips).
-    if (e.rec.kind != QLatin1String("nvr")) {
-        m_pending.addFuture(QtConcurrent::run([this, client, ch, row, host, port, https, start,
-                                               end, safe] {
-            QStringList saved;
-            QString error;
-            const api::BatchResult b = client->call(Json::array(
-                {api::searchBody(ch, start.addSecs(-3600), end, QStringLiteral("main"))}));
-            if (!b.transportOk || b.results.isEmpty() || !b.results.first().ok) {
-                error = b.error.isEmpty() ? tr("clip request failed") : b.error;
-            } else {
-                for (const api::RecordingFile &f : api::parseSearch(b.results.first().value).files) {
-                    if (f.name.isEmpty() || !f.start.isValid() || f.start > end
-                        || (f.end.isValid() && f.end < start))
-                        continue;
-                    const QString url = api::downloadUrl(host, port, https, f.name,
-                                                         client->token(), f.name.section(u'/', -1));
-                    const QString path = Paths::recordingsDir() + u'/' + safe + u'_'
-                                         + f.start.toString(QStringLiteral("yyyyMMdd_hhmmss"))
-                                         + QStringLiteral(".mp4");
-                    QString dlErr;
-                    if (client->downloadToFile(url, path, 300, &dlErr))
-                        saved.append(path);
-                    else
-                        error = dlErr.isEmpty() ? tr("download failed") : dlErr;
-                }
-                if (saved.isEmpty() && error.isEmpty())
-                    error = tr("no recording covers this moment");
-            }
-            QMetaObject::invokeMethod(
-                this,
-                [this, row, saved, error] {
-                    if (!saved.isEmpty())
-                        emit clipExported(row, saved.join(QStringLiteral(", ")));
-                    else
-                        emit clipExportFailed(row, error);
-                },
-                Qt::QueuedConnection);
-        }));
-        return;
-    }
-
-    m_pending.addFuture(QtConcurrent::run([this, client, ch, row, host, port, https, start, end,
-                                           startStamp, safe] {
+    // The main stream of [start, end], cut by the device (cmd 143) and written
+    // into an MP4 here, as the official client exports a clip.
+    m_pending.addFuture(QtConcurrent::run([this, session, ch, uid, size, row, start, end, safe] {
+        const QString path = Paths::recordingsDir() + u'/' + safe + u'_'
+                             + start.toString(QStringLiteral("yyyyMMdd_hhmmss")) + QStringLiteral(".mp4");
+        BcClipWriter writer(path);
         QString error;
-        QString saved;
-        const api::BatchResult b =
-            client->call(Json::array({api::nvrDownloadBody(ch, start, end, QStringLiteral("main"))}));
-        if (b.transportOk && !b.results.isEmpty() && b.results.first().ok) {
-            const QVector<api::DownloadFile> files = api::parseNvrDownload(b.results.first().value);
-            api::DownloadFile pick;
-            for (const api::DownloadFile &f : files)
-                if (f.fileName.contains(startStamp)) { pick = f; break; }
-            if (pick.fileName.isEmpty())
-                for (const api::DownloadFile &f : files)
-                    if (f.size > pick.size)
-                        pick = f;
-            if (pick.fileName.isEmpty()) {
-                error = tr("no recording covers this moment");
-            } else {
-                const QString url =
-                    api::downloadUrl(host, port, https, pick.fileName, client->token());
-                const QString path = Paths::recordingsDir() + u'/' + safe + u'_'
-                                     + start.toString(QStringLiteral("yyyyMMdd_hhmmss"))
-                                     + QStringLiteral(".mp4");
-                QString dlErr;
-                if (client->downloadToFile(url, path, 300, &dlErr)) // NVR downloads are slow
-                    saved = path;
-                else
-                    error = dlErr.isEmpty() ? tr("download failed") : dlErr;
-            }
-        } else {
-            error = b.error.isEmpty() ? tr("clip request failed") : b.error;
-        }
+        const bool got = bcrec::downloadClip(
+            *session, ch, uid, start, end, /*mainStream=*/true,
+            [&writer, size](const BcMediaParser::VideoFrame &f, int w, int h) {
+                writer.addVideo(f, w > 0 ? w : size.width(), h > 0 ? h : size.height());
+            },
+            [&writer](const BcMediaParser::AudioFrame &a) { writer.addAudio(a); }, nullptr, &error);
+        const bool ok = writer.finish(got ? &error : nullptr) && got;
+        if (!ok)
+            QFile::remove(path);
         QMetaObject::invokeMethod(
             this,
-            [this, row, saved, error] {
-                if (!saved.isEmpty())
-                    emit clipExported(row, saved);
+            [this, row, ok, path, error] {
+                if (ok)
+                    emit clipExported(row, path);
                 else
-                    emit clipExportFailed(row, error);
+                    emit clipExportFailed(row, error.isEmpty() ? tr("export failed") : error);
             },
             Qt::QueuedConnection);
     }));
@@ -1336,8 +1198,11 @@ bool DeviceManager::seekBaichuanPlayback(int row, qint64 startEpoch)
 
 void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const QString &tag)
 {
+    // Commands moved to Baichuan go through the device's session (bcset); the
+    // others still use the HTTP API until their turn.
+    const auto session = sessionFor(row);
     auto client = clientFor(row);
-    if (!client || getCommands.isEmpty()) {
+    if (!session || !client || getCommands.isEmpty()) {
         if (tag.isEmpty())
             emit settingsFailed(row, tr("device not ready"));
         else
@@ -1346,7 +1211,7 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const
         return;
     }
     const int ch = m_entries.at(row).channel;
-    m_pending.addFuture(QtConcurrent::run([this, client, row, ch, getCommands, tag] {
+    m_pending.addFuture(QtConcurrent::run([this, session, client, row, ch, getCommands, tag] {
         QVariantMap values;
         QStringList failed;
         QString lastError;
@@ -1374,6 +1239,19 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const
             {QStringLiteral("GetFtp"), QStringLiteral("GetFtpV20")},
             {QStringLiteral("GetRec"), QStringLiteral("GetRecV20")}};
         for (const QString &c : getCommands) {
+            if (bcset::handles(c)) {
+                QVariant value, range;
+                QString error;
+                if (bcset::get(*session, ch, c, &value, &range, &error)) {
+                    values.insert(c, value);
+                    if (range.isValid())
+                        values.insert(c + QStringLiteral("Range"), range);
+                } else {
+                    failed.append(c);
+                    lastError = error;
+                }
+                continue;
+            }
             api::CommandResult r = fetchOne(c);
             if (!r.ok && r.rspCode != 0 && v20Alt.contains(c))
                 r = fetchOne(v20Alt.value(c));
@@ -1419,13 +1297,28 @@ void DeviceManager::fetchSettings(int row, const QStringList &getCommands, const
 
 void DeviceManager::applySetting(int row, const QString &setCommand, const QVariantMap &param)
 {
+    const auto session = sessionFor(row);
     auto client = clientFor(row);
-    if (!client) {
+    if (!session || !client) {
         emit settingApplied(row, setCommand, false, tr("device not ready"));
         return;
     }
     if (row < m_entries.size() && !m_entries.at(row).isAdmin) {
         emit settingApplied(row, setCommand, false, tr("requires an administrator account"));
+        return;
+    }
+    if (bcset::handles(setCommand)) {
+        const int ch = m_entries.at(row).channel;
+        m_pending.addFuture(QtConcurrent::run([this, session, row, ch, setCommand, param] {
+            QString error;
+            const bool ok = bcset::set(*session, ch, setCommand, param, &error);
+            QMetaObject::invokeMethod(
+                this,
+                [this, row, setCommand, ok, error] {
+                    emit settingApplied(row, setCommand, ok, ok ? QString() : error);
+                },
+                Qt::QueuedConnection);
+        }));
         return;
     }
     const Json p = api::toJson(param);

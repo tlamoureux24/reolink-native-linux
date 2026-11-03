@@ -13,8 +13,8 @@
 
 namespace rl {
 
-TalkSession::TalkSession(BaichuanControl::Params params, int channel, QObject *parent)
-    : QObject(parent), m_params(std::move(params)), m_channel(channel)
+TalkSession::TalkSession(std::shared_ptr<BcSession> session, int channel, QObject *parent)
+    : QObject(parent), m_session(std::move(session)), m_channel(channel)
 {
 }
 
@@ -56,7 +56,7 @@ void TalkSession::runWorker()
 
 void TalkSession::talk()
 {
-    BaichuanControl bc(m_params);
+    BaichuanControl bc(m_session);
     auto fail = [this](const QString &msg) {
         QMetaObject::invokeMethod(this, [this, msg] { emit failed(msg); }, Qt::QueuedConnection);
     };

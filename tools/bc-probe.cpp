@@ -13,8 +13,10 @@
 #include "protocol/BcCrypto.h"
 #include "protocol/BcDevice.h"
 #include "protocol/BcRecordings.h"
+#include "protocol/BcSettings.h"
 #include "protocol/BaichuanClient.h"
 #include "media/BcMediaParser.h"
+#include "media/BcClipWriter.h"
 #include "protocol/ReolinkApi.h"
 #include "protocol/ReolinkHttpClient.h"
 #include "protocol/BcSession.h"
@@ -64,6 +66,16 @@ int main(int argc, char **argv)
         {"rate", "With --play: playback speed.", "x", "1"},
         {"seek", "With --play: halfway, seek to this time of day.", "hh:mm:ss"},
         {"snapshot", "Take a snapshot (cmd 109) into this file (--main for full size).", "file"},
+        {"http-get", "Also print the HTTP API's JSON answer to this Get command, channel 0 "
+                     "(repeatable; for comparing formats).", "cmd"},
+        {"bc-get", "Print the Baichuan answer to this HTTP Get command name, as the app "
+                   "turns it into the HTTP JSON (repeatable; compare with --http-get).", "cmd"},
+        {"download", "With --search-day: download the day's first file of 20-60 s with cmd 8 "
+                     "into this file and report what arrives.", "file"},
+        {"cut", "With --search-day: cmd 143 from the day's first 20-60 s file's start + 2 s, "
+                "for this many seconds; report what arrives.", "s"},
+        {"export", "With --search-day: export 15 s from the day's first 20-60 s file's start "
+                   "(cmd 143) into this MP4, as the app does.", "file"},
         {"compare", "Read the device over Baichuan and over HTTP (GetDevInfo, GetAbility, "
                     "GetEnc) and print both, field by field."},
     });
@@ -178,6 +190,21 @@ int main(int argc, char **argv)
                     d.isNvr, d.channelNum, qPrintable(d.uid), qPrintable(d.firmware));
     }
 
+    for (const QString &c : cli.values("http-get")) {
+        ReolinkHttpClient http(cli.value("host"), 443, true, sp.username, password);
+        const api::BatchResult b = http.call(Json::array({api::command(c, Json{{"channel", 0}}, 1)}));
+        std::printf("--- http %s: %s\n", qPrintable(c),
+                    b.results.isEmpty() ? qPrintable(b.error)
+                                        : (b.results.first().ok ? b.results.first().value.dump().c_str()
+                                                                : qPrintable(b.results.first().detail)));
+    }
+    for (const QString &c : cli.values("bc-get")) {
+        QVariant value, range;
+        QString err;
+        const bool ok = bcset::get(*s, 0, c, &value, &range, &err);
+        std::printf("--- bc %s: %s %s range %s\n", qPrintable(c), ok ? "" : qPrintable(err),
+                    api::toJson(value.toMap()).dump().c_str(), api::toJson(range.toMap()).dump().c_str());
+    }
     if (cli.isSet("snapshot")) {
         t.restart();
         QString err;
@@ -251,6 +278,133 @@ int main(int argc, char **argv)
             std::printf("play %s x%s: %.2f MB in %.1f s = %.2f Mbit/s\n", main ? "main" : "sub",
                         qPrintable(cli.value("rate")), bytes / 1e6, w.elapsed() / 1000.0,
                         bytes * 8 / (w.elapsed() / 1000.0) / 1e6);
+        }
+        if (cli.isSet("download") && !files.isEmpty()) {
+            bcrec::Recording f = files.first();
+            for (const auto &c : files)
+                if (c.start.secsTo(c.end) >= 20 && c.start.secsTo(c.end) <= 60) { f = c; break; }
+            const QByteArray stream = main ? "mainStream" : "subStream";
+            const QByteArray body = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<FileInfoList version=\"1.1\">\n<FileInfo>\n<uid>"
+                + uid.toUtf8() + "</uid>\n<Id>" + f.id.toUtf8() + "</Id>\n<name>" + f.name.toUtf8()
+                + "</name>\n<channelId>0</channelId>\n<supportSub>" + QByteArray(main ? "0" : "1")
+                + "</supportSub>\n<streamType>" + stream + "</streamType>\n</FileInfo>\n</FileInfoList>\n</body>\n";
+            QMutex dm;
+            QByteArray data, firstXml;
+            int msgs = 0;
+            quint16 lastStatus = 0;
+            qint64 lastAt = 0;
+            const quint32 id = s->newMessId();
+            const QByteArray k = key;
+            QElapsedTimer w;
+            w.start();
+            s->route(id, [&](const BcMessage &m) {
+                QMutexLocker l(&dm);
+                ++msgs;
+                lastStatus = m.status;
+                lastAt = w.elapsed();
+                const int off = int(m.payloadOffset);
+                const QByteArray ext = off ? bc::aesCfb(m.body.left(off), k, true) : QByteArray();
+                if (firstXml.isEmpty() && !ext.isEmpty())
+                    firstXml = ext.left(400);
+                QByteArray payload = off ? m.body.mid(off) : QByteArray();
+                const int p = ext.indexOf("<encryptLen>");
+                if (p >= 0 && !payload.isEmpty()) {
+                    const int n = ext.mid(p + 12, ext.indexOf("</encryptLen>", p) - p - 12).toInt();
+                    payload = bc::aesCfb(payload.left(n), k, true) + payload.mid(n);
+                }
+                if (!off && !m.body.isEmpty() && firstXml.isEmpty())
+                    firstXml = bc::aesCfb(m.body, k, true).left(400);
+                data += payload;
+            });
+            s->send(8, 1, id, bc::aesCfb(BcSession::channelExtension(0), k, false), bc::aesCfb(body, k, false));
+            for (;;) {
+                QThread::msleep(200);
+                QMutexLocker l(&dm);
+                if ((lastAt && w.elapsed() - lastAt > 3000) || w.elapsed() > 60000)
+                    break;
+            }
+            s->unroute(id);
+            QFile out(cli.value("download"));
+            if (out.open(QIODevice::WriteOnly))
+                out.write(data);
+            std::printf("download %s (%lld s file) %s: %d messages, %d bytes, last status %u, in %.1f s\n"
+                        "first bytes: %s\nfirst xml: %s\n", qPrintable(f.name), f.start.secsTo(f.end),
+                        stream.constData(), msgs, int(data.size()), lastStatus, lastAt / 1000.0,
+                        data.left(16).toHex(' ').constData(), firstXml.constData());
+        }
+        if (cli.isSet("cut") && !files.isEmpty()) {
+            bcrec::Recording f = files.first();
+            for (const auto &c : files)
+                if (c.start.secsTo(c.end) >= 20 && c.start.secsTo(c.end) <= 60) { f = c; break; }
+            const QDateTime from = f.start.addSecs(2), to = from.addSecs(cli.value("cut").toInt());
+            auto tm = [](const char *tag, const QDateTime &t) {
+                return "<" + QByteArray(tag) + "><year>" + QByteArray::number(t.date().year()) + "</year><month>"
+                    + QByteArray::number(t.date().month()) + "</month><day>" + QByteArray::number(t.date().day())
+                    + "</day><hour>" + QByteArray::number(t.time().hour()) + "</hour><minute>"
+                    + QByteArray::number(t.time().minute()) + "</minute><second>" + QByteArray::number(t.time().second())
+                    + "</second></" + QByteArray(tag) + ">\n";
+            };
+            const QByteArray body = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<body>\n<FileInfoList version=\"1.1\">\n<FileInfo>\n<uid>"
+                + uid.toUtf8() + "</uid>\n<logicChnBitmap>255</logicChnBitmap>\n<channelId>0</channelId>\n<supportSub>"
+                + QByteArray(main ? "0" : "1") + "</supportSub>\n<streamType>" + (main ? "mainStream" : "subStream")
+                + "</streamType>\n" + tm("startTime", from) + tm("endTime", to) + "</FileInfo>\n</FileInfoList>\n</body>\n";
+            QMutex dm;
+            BcMediaParser parser;
+            quint32 firstUs = 0, lastUs = 0;
+            int frames = 0, audio = 0, msgs = 0;
+            qint64 lastAt = 0;
+            quint32 firstT = 0, lastT = 0;
+            parser.onVideo = [&](const BcMediaParser::VideoFrame &v) {
+                if (!firstUs) { firstUs = v.microseconds; firstT = v.time; }
+                lastUs = v.microseconds; if (v.time) lastT = v.time; ++frames;
+            };
+            parser.onAudio = [&](const BcMediaParser::AudioFrame &) { ++audio; };
+            const quint32 id = s->newMessId();
+            const QByteArray k = key;
+            QElapsedTimer w;
+            w.start();
+            s->route(id, [&](const BcMessage &m) {
+                QMutexLocker l(&dm);
+                ++msgs;
+                lastAt = w.elapsed();
+                const int off = int(m.payloadOffset);
+                if (!off) return;
+                const QByteArray ext = bc::aesCfb(m.body.left(off), k, true);
+                QByteArray payload = m.body.mid(off);
+                const int p = ext.indexOf("<encryptLen>");
+                if (p >= 0 && !payload.isEmpty()) {
+                    const int n = ext.mid(p + 12, ext.indexOf("</encryptLen>", p) - p - 12).toInt();
+                    payload = bc::aesCfb(payload.left(n), k, true) + payload.mid(n);
+                }
+                parser.append(payload);
+            });
+            s->send(143, 1, id, bc::aesCfb(BcSession::channelExtension(0), k, false), bc::aesCfb(body, k, false));
+            for (;;) {
+                QThread::msleep(200);
+                QMutexLocker l(&dm);
+                if ((lastAt && w.elapsed() - lastAt > 3000) || w.elapsed() > 60000)
+                    break;
+            }
+            s->unroute(id);
+            QMutexLocker l(&dm);
+            std::printf("cut %s +%s s (%s): %d msgs, %d video frames (%.1f s of video, wall %s..%s), %d audio, done in %.1f s\n",
+                        qPrintable(from.toString(Qt::ISODate)), qPrintable(cli.value("cut")), main ? "main" : "sub", msgs, frames,
+                        (lastUs - firstUs) / 1e6, qPrintable(QDateTime::fromSecsSinceEpoch(firstT).time().toString()),
+                        qPrintable(QDateTime::fromSecsSinceEpoch(lastT).time().toString()), audio, lastAt / 1000.0);
+        }
+        if (cli.isSet("export") && !files.isEmpty()) {
+            bcrec::Recording f = files.first();
+            for (const auto &c : files)
+                if (c.start.secsTo(c.end) >= 20 && c.start.secsTo(c.end) <= 60) { f = c; break; }
+            BcClipWriter writer(cli.value("export"));
+            QString err;
+            t.restart();
+            const bool got = bcrec::downloadClip(*s, 0, uid, f.start.addSecs(2), f.start.addSecs(17), main,
+                [&](const BcMediaParser::VideoFrame &v, int w, int h) { writer.addVideo(v, w, h); },
+                [&](const BcMediaParser::AudioFrame &a) { writer.addAudio(a); }, nullptr, &err);
+            const bool ok = writer.finish(&err);
+            std::printf("export %s: got=%d written=%d frames=%d in %lld ms %s\n", qPrintable(cli.value("export")),
+                        got, ok, writer.videoFrames(), t.elapsed(), qPrintable(err));
         }
         if (cli.isSet("replay") && !files.isEmpty()) {
             // Pick a file long enough to measure (>= 30 s), else the first.

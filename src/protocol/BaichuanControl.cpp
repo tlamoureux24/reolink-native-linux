@@ -3,6 +3,7 @@
 #include "core/Log.h"
 
 #include "protocol/BcCrypto.h"
+#include "protocol/BcSession.h"
 
 #include <QTcpSocket>
 #include <QXmlStreamReader>
@@ -119,6 +120,8 @@ QByteArray channelExtension(int channel)
 
 BaichuanControl::BaichuanControl(Params params) : m_p(std::move(params)) {}
 
+BaichuanControl::BaichuanControl(std::shared_ptr<BcSession> session) : m_session(std::move(session)) {}
+
 BaichuanControl::~BaichuanControl()
 {
     close();
@@ -126,6 +129,8 @@ BaichuanControl::~BaichuanControl()
 
 bool BaichuanControl::isOpen() const
 {
+    if (m_session)
+        return m_session->isAlive();
     return m_sock && m_sock->state() == QAbstractSocket::ConnectedState;
 }
 
@@ -157,6 +162,10 @@ static bool recvMatch(QTcpSocket *sock, QByteArray &netBuf, quint32 wantCmd, Msg
 
 bool BaichuanControl::open()
 {
+    if (m_session) {
+        m_aesKey = m_session->aesKey();
+        return m_session->waitReady(15000);
+    }
     m_sock = std::make_unique<QTcpSocket>();
     m_sock->connectToHost(m_p.host, static_cast<quint16>(m_p.port));
     if (!m_sock->waitForConnected(5000)) {
@@ -232,6 +241,16 @@ QByteArray BaichuanControl::transact(quint32 cmdId, int channel, const QByteArra
         return {};
     const quint8 chId = channel < 0 ? 250 : static_cast<quint8>(channel + 1);
     const QByteArray ext = channel < 0 ? QByteArray() : channelExtension(channel);
+    if (m_session) {
+        QByteArray xml;
+        quint16 status = 0;
+        if (!m_session->requestXml(cmdId, chId, ext, bodyXml, &xml, &status, 12000,
+                                   &m_messId))
+            return {};
+        if (statusOut)
+            *statusOut = status;
+        return xml;
+    }
     const QByteArray encExt = ext.isEmpty() ? QByteArray() : bc::aesCfb(ext, m_aesKey, false);
     const QByteArray encBody =
         bodyXml.isEmpty() ? QByteArray() : bc::aesCfb(bodyXml, m_aesKey, false);
@@ -496,6 +515,10 @@ bool BaichuanControl::talkSend(int channel, const QByteArray &frame)
     static const QByteArray variant = qgetenv("RL_TALK_VARIANT");
     const bool zeroHdr = variant.contains("zerohdr");
     const bool plainExt = variant.contains("plainext");
+    if (m_session)
+        return m_session->send(202, zeroHdr ? 0 : static_cast<quint8>(channel + 1),
+                               zeroHdr ? 0 : m_talkMessId,
+                               plainExt ? ext : bc::aesCfb(ext, m_aesKey, false), frame);
     m_sock->write(modernMessage(202, zeroHdr ? 0 : static_cast<quint8>(channel + 1),
                                 zeroHdr ? 0 : m_talkMessId,
                                 plainExt ? ext : bc::aesCfb(ext, m_aesKey, false), frame));

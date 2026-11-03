@@ -6,6 +6,11 @@
 #include <QString>
 #include <QVector>
 
+#include "media/BcMediaParser.h"
+
+#include <atomic>
+#include <functional>
+
 // Recordings over Baichuan, as the official client finds them (BaichuanReplayer):
 //
 //   cmd 142 <DayRecords>     the days of a month that have recordings
@@ -40,6 +45,15 @@ QVector<int> monthDays(BcSession &s, int channel, const QString &uid, int year, 
 // answering.
 bool searchDay(BcSession &s, int channel, const QString &uid, const QDate &date, bool mainStream,
                QVector<Recording> *out);
+
+// A recording cut from `from` to `to` (cmd 143 DOWNLOAD_CUT, as the official
+// client exports a clip): the device sends that span's media, faster than real
+// time, then stops. Frames go to the callbacks (on the session's worker).
+bool downloadClip(BcSession &s, int channel, const QString &uid, const QDateTime &from,
+                  const QDateTime &to, bool mainStream,
+                  const std::function<void(const BcMediaParser::VideoFrame &, int w, int h)> &onVideo,
+                  const std::function<void(const BcMediaParser::AudioFrame &)> &onAudio,
+                  const std::atomic<bool> *abort, QString *error);
 
 } // namespace bcrec
 } // namespace rl

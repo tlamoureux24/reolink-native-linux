@@ -99,7 +99,8 @@ public:
     // reply's body into `replyXml`. False if no reply came; `status` is the
     // reply's (200 = OK).
     bool requestXml(quint32 cmd, quint8 channel, const QByteArray &extXml, const QByteArray &bodyXml,
-                    QByteArray *replyXml, quint16 *status = nullptr, int timeoutMs = 12000);
+                    QByteArray *replyXml, quint16 *status = nullptr, int timeoutMs = 12000,
+                    quint32 *messIdOut = nullptr);
     // The extension a channel-scoped command carries (0-based channel id).
     static QByteArray channelExtension(int channel);
     // Decipher a message's body (without its extension).

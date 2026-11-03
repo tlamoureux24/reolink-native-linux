@@ -203,27 +203,6 @@ private slots:
                     .startsWith(QStringLiteral("https://[fd00::12]:443/")));
     }
 
-    void ptzCtrlBuild()
-    {
-        const Json move = api::ptzCtrl(2, QStringLiteral("Left"), 40);
-        QCOMPARE(move.value("cmd", std::string{}), std::string("PtzCtrl"));
-        QCOMPARE(move["param"].value("channel", -1), 2);
-        QCOMPARE(move["param"].value("op", std::string{}), std::string("Left"));
-        QCOMPARE(move["param"].value("speed", -1), 40);
-        QVERIFY(!move["param"].contains("id"));
-
-        // Stop carries no speed.
-        const Json stop = api::ptzCtrl(0, QStringLiteral("Stop"));
-        QVERIFY(!stop["param"].contains("speed"));
-
-        // Speed is clamped to the device range.
-        QCOMPARE(api::ptzCtrl(0, QStringLiteral("Up"), 999)["param"].value("speed", -1), 64);
-
-        // ToPos includes the preset id.
-        const Json preset = api::ptzCtrl(1, QStringLiteral("ToPos"), 32, 3);
-        QCOMPARE(preset["param"].value("id", -1), 3);
-    }
-
     void parseAbilityCaps()
     {
         // talk is per-channel (verified on RLN8-410 firmware).

@@ -89,10 +89,6 @@ inline constexpr auto Stop = "Stop";
 inline constexpr auto ToPos = "ToPos"; // go to preset (needs presetId)
 } // namespace ptz
 
-// Build a PtzCtrl command. presetId >= 0 is included (for ToPos); speed is clamped
-// by the device to its own range (typically 1..64).
-Json ptzCtrl(int channel, const QString &op, int speed = 32, int presetId = -1);
-
 
 // ---- Capabilities (GetAbility) --------------------------------------------
 // Per-channel capability flags parsed from Ability.abilityChn[i]. Field names
